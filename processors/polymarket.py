@@ -3,7 +3,7 @@ import math
 from datetime import datetime, timedelta
 
 # === ⚙️ 1. 基础配置 ===
-TABLE_NAME = "polymarket_logs"  # 对应你的 SQL 表名
+TABLE_NAME = "polymarket_logs"  # 严格对应 SQL 表名
 ARCHIVE_FOLDER = "polymarket"
 
 # === 🛠️ 2. 数据清洗工具 (入库用) ===
@@ -26,7 +26,6 @@ def parse_num(val):
         return 0
 
 # === 📥 3. 入库算法 (Process) ===
-# 严格对应你的 SQL 结构：bj_time, title, slug, ticker...
 def process(raw_data, path):
     processed_list = []
     
@@ -61,23 +60,25 @@ def process(raw_data, path):
         
     return processed_list
 
-# === 🧮 4. 动态审计评分 (出库用) ===
-# 因为数据库没存 score，我们读出来的时候现算
+# === 🧮 4. 动态审计评分 (出库计算用) ===
 def calculate_score(item):
+    """从数据库记录还原 V5 审计分"""
     vol24h = float(item.get('vol24h') or 0)
-    day_change = abs(float(item.get('dayChange') or item.get('day_change') or 0)) # 兼容 SQL 字段名
+    # 兼容可能存在的不同字段名
+    day_change = abs(float(item.get('dayChange') or item.get('day_change') or 0))
     
     # 基础公式：量 * (波动+1)
     score = vol24h * (day_change + 1)
     
-    # 狙击加成 (读取 raw_json 或字段)
+    # 狙击加成 (基于 raw_json 或 title/question 字段)
     text = (str(item.get('title')) + " " + str(item.get('question'))).lower()
     snipers = ["gold", "bitcoin", "btc", "fed", "federal reserve", "xau"]
+    # 剔除 warsh (他在 Radar 板块)
     if any(k in text for k in snipers) and "warsh" not in text:
         score *= 100
         
-    # 策略加成
-    tags = item.get('strategy_tags', [])
+    # 策略加成 (从 JSONB 字段读)
+    tags = item.get('strategy_tags') or []
     if 'TAIL_RISK' in tags: score *= 50
     if 'HIGH_CERTAINTY' in tags: score *= 30
         
@@ -94,19 +95,19 @@ def get_win_rate(price_str):
 def get_hot_items(supabase, table_name):
     # 1. 拉取过去 24 小时的数据
     yesterday = (datetime.now() - timedelta(hours=24)).isoformat()
-    # 注意：这里 select * 会把 raw_json 也拉出来，方便我们计算 score
+    # select * 包含 raw_json 和 strategy_tags，足够计算 score
     res = supabase.table(table_name).select("*").gt("bj_time", yesterday).execute()
     if not res.data: return {}
     
     all_data = res.data
     
     # 2. 区分引擎池
-    sniper_pool = [i for i in all_data if i['engine'] == 'sniper']
-    radar_pool = [i for i in all_data if i['engine'] == 'radar']
+    sniper_pool = [i for i in all_data if i.get('engine') == 'sniper']
+    radar_pool = [i for i in all_data if i.get('engine') == 'radar']
     
     sector_matrix = {}
 
-    # --- 辅助函数：防刷屏 (同一 Slug 只取共识和冲突) ---
+    # --- 🛡️ 核心：V5.1 防刷屏与补全逻辑 ---
     def anti_flood_filter(items):
         grouped = {}
         for i in items:
@@ -116,23 +117,35 @@ def get_hot_items(supabase, table_name):
         
         final = []
         for s, rows in grouped.items():
-            # 必须先计算 score 才能排序
+            # 先计算 score
             for r in rows: r['_temp_score'] = calculate_score(r)
             rows.sort(key=lambda x: x['_temp_score'], reverse=True)
             
-            # 提取逻辑
+            # 1. 优先提取：共识项 (>80%) 和 冲突项 (<15%)
             consensus = [r for r in rows if get_win_rate(r['prices']) > 80]
             conflict = [r for r in rows if get_win_rate(r['prices']) < 15]
             
             picks = []
             if consensus: picks.append(consensus[0])
             if conflict: picks.append(conflict[0])
+            
+            # 2. 兜底：如果没选中，取带头大哥
             if not picks: picks.append(rows[0])
             
-            final.extend(picks[:2])
+            # 3. 🔥 二号位补全 (V5.1) 🔥
+            # 如果只选了1个，且老二很强(>老大的20%)，把它也捞回来，防止漏掉势均力敌的对手
+            if len(picks) < 2 and len(rows) > 1:
+                top_item = picks[0]
+                for candidate in rows:
+                    if candidate['question'] == top_item['question']: continue
+                    if candidate['_temp_score'] > (top_item['_temp_score'] * 0.2):
+                        picks.append(candidate)
+                        break
+            
+            final.extend(picks[:2]) # 最终每个事件限 2 条
         return final
 
-    # A. 狙击区 (Sniper)
+    # A. 狙击区 (Sniper) - 全量展示
     if sniper_pool:
         refined = anti_flood_filter(sniper_pool)
         refined.sort(key=lambda x: x['_temp_score'], reverse=True)
@@ -143,18 +156,20 @@ def get_hot_items(supabase, table_name):
                 "score": i['_temp_score'],
                 "user_name": f"SNIPER | {get_win_rate(i['prices'])}%",
                 "full_text": f"{i['question']} (Vol: ${int(i['vol24h']):,})",
-                "tweet_url": f"https://polymarket.com/event/{i['slug']}"
+                # 🔥 修正：使用通用 url 字段，不再用 tweet_url
+                "url": f"https://polymarket.com/event/{i['slug']}"
             })
         sector_matrix["🎯 SNIPER (核心监控)"] = display_list
 
     # B. 雷达区 (Radar) - 比例配额
     SECTORS = ["Politics", "Geopolitics", "Science", "Tech", "Finance", "Crypto", "Economy"]
-    MAP = {'POLITICS': 'Politics', 'GEOPOLITICS': 'Geopolitics', 'TECH': 'Tech', 'FINANCE': 'Finance', 'CRYPTO': 'Crypto'} # 简写映射
+    # 简写映射表
+    MAP = {'POLITICS': 'Politics', 'GEOPOLITICS': 'Geopolitics', 'TECH': 'Tech', 'FINANCE': 'Finance', 'CRYPTO': 'Crypto'}
     
     if radar_pool:
         for s in SECTORS:
             # 过滤当前板块的数据
-            pool = [i for i in radar_pool if MAP.get(i['category'], 'Other') == s or i['category'] == s.upper()]
+            pool = [i for i in radar_pool if MAP.get(i.get('category'), 'Other') == s or i.get('category') == s.upper()]
             if not pool: continue
             
             refined = anti_flood_filter(pool)
@@ -169,7 +184,7 @@ def get_hot_items(supabase, table_name):
                     "score": i['_temp_score'],
                     "user_name": f"{s} | {get_win_rate(i['prices'])}%",
                     "full_text": f"{i['title']} -> {i['question']}",
-                    "tweet_url": f"https://polymarket.com/event/{i['slug']}"
+                    "url": f"https://polymarket.com/event/{i['slug']}"
                 })
             sector_matrix[s] = display_list
 
