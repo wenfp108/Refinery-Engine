@@ -2,75 +2,93 @@ import json
 import math
 from datetime import datetime, timedelta
 
+# === ⚙️ 配置区 (已更新) ===
+
 TABLE_NAME = "twitter_logs"
 TARGET_TOTAL_QUOTA = 30  # 🌟 最终只选出全网最好的 30 条
 
-# === 🛑 1. 政治/垃圾噪音词 (核打击) ===
-# 只要出现这些词，分数直接打 1 折（除非有豁免权）
+# === 🛑 1. 政治/垃圾噪音词 (已针对新板块优化) ===
+# 既然 "Politics" 现在是正经板块，我们只杀无意义的情绪宣泄词
 NOISE_KEYWORDS = [
-    "woke", "maga", "democrat", "republican", "leftist", "right wing", "liberal", "conservative",
-    "fascist", "communist", "socialist", "pronouns", "dei", "border crisis", "illegal",
-    "trump", "biden", "harris", "vance", "pelosi", "schumer", "election", "ballot",
-    "scandal", "epstein", "pedophile", "traitor", "shame", "disgrace", "culture war",
-    "nazi", "hitler", "antisemitism", "zionist", "genocide"
+    "woke", "libtard", "magatard", "shame", "disgrace", "traitor", 
+    "pedophile", "epstein", "pronouns", "culture war", "scandal",
+    "destroy", "lies", "liar", "clown", "hypocrite", "idiot"
 ]
 
-# === 🔰 2. 宏观豁免词 (免死金牌) ===
-# 政治贴里如果有这些词，说明在聊正事（立法/宏观/监管），不降权
+# === 🔰 2. 宏观豁免词 (保护长文不被误杀) ===
 MACRO_IMMUNITY = [
     "fed", "federal reserve", "powell", "fomc", "rate", "interest", "cut", "hike",
     "tariff", "trade war", "sanction", "export", "import", "duty",
     "china", "taiwan", "russia", "ukraine", "israel", "iran", "war", "military",
     "stimulus", "debt", "deficit", "budget", "tax", "treasury", "bond", "yield",
-    "bitcoin", "btc", "crypto", "ban", "regulation", "sec", "gensler", "etf",
+    "bitcoin", "btc", "crypto", "ban", "regulation", "sec", "etf",
     "executive order", "veto", "sign", "bill", "act", "law", "legislation",
     "nominate", "nominee", "appoint", "confirm", "supreme court", "ruling"
 ]
 
-# === 🧠 3. 精准话题词库 (权重竞价模式) ===
-# 词越长、越专业，权重越高，防止误判
+# === 🧠 3. 精准话题词库 (7大板块 - 权重竞价模式) ===
+# 包含：Tech, Politics, Finance, Economy, Geo, Science, Crypto
 TOPIC_RULES = {
-    "Crypto": [
-        "bitcoin", "btc", "ethereum", "eth", "solana", "defi", "nft", "stablecoin", "usdc", "usdt",
-        "etf flow", "blackrock", "layer2", "zk-rollup", "airdrop", "staking", "restaking", "memecoin",
-        "binance", "coinbase", "satoshi", "vitalik", "on-chain analysis", "wallet", "altcoin"
+    "Tech": [ # 科技：AI, 芯片, 编程, 硬科技
+        "llm", "genai", "gpt-5", "gpt-4", "claude", "gemini", "llama", "deepseek", "anthropic", "openai",
+        "nvidia", "nvda", "h100", "blackwell", "cuda", "gpu", "semiconductor", "tsmc", "asml", "wafer",
+        "spacex", "starship", "falcon", "tesla", "tsla", "fsd", "robot", "optimus", "figure ai",
+        "python", "rust", "github", "huggingface", "open source", "coding"
     ],
-    "AI/Tech": [
-        "llm", "transformer", "genai", "generative ai", "inference", "training run", "pre-training",
-        "gpt-5", "gpt-4", "claude", "gemini", "llama", "deepseek", "mistral", "anthropic", "openai",
-        "nvidia", "nvda", "h100", "blackwell", "cuda", "gpu", "tpu", "asic", "compute",
-        "tsmc", "asml", "semiconductor", "chip", "wafer", "moore's law",
-        "spacex", "starship", "falcon", "tesla", "tsla", "fsd", "optimus", "robot",
-        "python", "rust", "github", "huggingface", "arxiv", "open source"
+    "Politics": [ # 政治：选举, 立法, 机构 (正经讨论)
+        "white house", "biden", "trump", "harris", "vance", "congress", "senate", "house of rep",
+        "supreme court", "scotus", "legislation", "bill", "veto", "executive order", "amendment",
+        "election", "poll", "voter", "ballot", "campaign", "republican", "democrat", "gop", "dnc"
     ],
-    "Science": [
+    "Finance": [ # 金融：二级市场, 投行, 财报 (Micro)
+        "sp500", "nasdaq", "spx", "ndx", "dow jones", "russell 2000", "vix",
+        "stock", "equity", "earnings", "revenue", "margin", "guidance", "buyback", "dividend",
+        "goldman", "jpmorgan", "morgan stanley", "bloomberg", "blackrock", "citadel",
+        "ipo", "merger", "acquisition", "short seller", "long position", "call option", "put option"
+    ],
+    "Economy": [ # 经济：宏观, 央行, 周期 (Macro)
+        "fomc", "federal reserve", "jerome powell", "fed funds", "interest rate", "hike", "cut",
+        "cpi", "ppi", "pce", "inflation", "deflation", "stagflation", "recession", "soft landing",
+        "gdp", "unemployment", "jobless", "non-farm", "payroll", "labor market",
+        "treasury", "bond yield", "10y", "2y", "curve inversion", "debt ceiling", "deficit"
+    ],
+    "Geo": [ # 地缘：战争, 外交, 制裁
+        "ukraine", "russia", "putin", "zelensky", "kursk", "kyiv",
+        "israel", "gaza", "hamas", "iran", "tehran", "red sea", "houthi", "hezbollah",
+        "china", "xi jinping", "taiwan", "south china sea", "pla", "ccp",
+        "nato", "pentagon", "nuclear", "weapon", "sanction", "trade war", "tariff"
+    ],
+    "Science": [ # 科学：学术, 能源, 生物, 航天
         "nature journal", "science magazine", "arxiv", "peer review", "preprint",
-        "nasa", "esa", "jwst", "supernova", "exoplanet", "quantum", "entanglement",
-        "superconductor", "lk-99", "fusion energy", "iter", "plasma",
-        "crispr", "mrna", "protein", "enzyme", "cancer research", "alzheimer", "longevity"
+        "nasa", "esa", "jwst", "supernova", "exoplanet", "quantum", "fusion energy", "lk-99",
+        "crispr", "mrna", "cancer", "alzheimer", "longevity", "biology", "physics", "chemistry"
     ],
-    "Macro": [
-        "sp500", "nasdaq", "bond yield", "treasury", "curve inversion",
-        "gold", "xau", "silver", "crude oil", "brent", "natural gas",
-        "earnings call", "revenue", "guidance", "profit margin", "buyback", "dividend",
-        "fomc", "fed funds", "powell", "cpi", "ppi", "pce", "inflation", "deflation", "stagflation",
-        "gdp", "recession", "soft landing", "non-farm", "unemployment", "jobless", "payroll",
-        "balance sheet", "quantitative tightening", "liquidity injection"
-    ],
-    "Geo": [
-        "ukraine", "russia", "putin", "zelensky", "donbas", "kursk",
-        "israel", "gaza", "hamas", "hezbollah", "iran", "tehran", "red sea", "houthi",
-        "china", "xi jinping", "taiwan", "south china sea", "pla", "semiconductor sanction",
-        "nato", "pentagon", "dod", "nuclear", "icbm", "drone warfare"
+    "Crypto": [ # 加密：Web3, 币, 链
+        "bitcoin", "btc", "ethereum", "eth", "solana", "defi", "stablecoin", "usdc", "usdt",
+        "etf flow", "blackrock", "coinbase", "binance", "satoshi", "vitalik", "memecoin",
+        "wallet", "private key", "smart contract", "layer2", "zk-rollup", "airdrop"
     ]
 }
 
 # === 🛡️ 4. VIP 白名单 (基础分加成) ===
+# 基于你提供的列表整合，涵盖所有板块领袖
 VIP_AUTHORS = [
-    "Karpathy", "Yann LeCun", "Vitalik", "Paul Graham", "Naval", 
-    "Eric Topol", "Huberman", "Lex Fridman", "Sam Altman", "Kobeissi Letter",
-    "Michael Saylor", "Balaji"
+    # Tech / AI
+    "Karpathy", "Yann LeCun", "Paul Graham", "Sam Altman", "François Chollet", 
+    "Rowan Cheung", "Naval", "Palmer Luckey", "Anduril", "Elon Musk",
+    
+    # Finance / Macro / Economy
+    "Nick Timiraos", "Ray Dalio", "Mohamed A. El-Erian", "Kobeissi Letter", 
+    "Walter Bloomberg", "Zerohedge", "Lyn Alden", "MacroAlf", "Goldman Sachs",
+    "Peter Schiff", "Michael Saylor", "Nassim Nicholas Taleb", "CME Group",
+    "Fitch Ratings", "IMF", "Unusual Whales", "The Economist", "WSJ Central Banks",
+    
+    # Geo / Politics / Science
+    "Ian Bremmer", "Eric Topol", "Vitalik", "SentDefender", "Visegrád 24",
+    "Spectator Index", "Disclose.tv", "Defense News", "Council on Foreign Relations"
 ]
+
+# === ⚙️ 核心逻辑函数 (完全保持原样) ===
 
 def fmt_k(num):
     if not num: return "0"
@@ -114,27 +132,24 @@ def process(raw_data, path):
         refined_results.append(row)
     return refined_results
 
-# 🔥 核心：上帝权重算法 3.0 🔥
+# 🔥 核心：上帝权重算法 4.0 (Final Logic) 🔥
 def calculate_score_and_tag(item):
     text = (item.get('full_text') or "").lower()
     user = (item.get('user_name') or "")
     
     # 1. 基础热度 (书签 x10, 转推 x5, 点赞 x1)
-    # 书签权重最高，因为它代表深度阅读和收藏价值
     metrics = item.get('raw_json', {}).get('metrics', {})
     base_score = (metrics.get('retweets', 0) * 5) + \
                  (metrics.get('bookmarks', 0) * 10) + \
                  metrics.get('likes', 0)
     
-    # 2. 话题竞价 (解决分类幻觉)
+    # 2. 话题竞价 (Strict Tagging)
     detected_topic = "General"
     max_keyword_len = 0 # 匹配到的关键词越长，置信度越高
     
     for topic, keywords in TOPIC_RULES.items():
         for k in keywords:
-            # 必须匹配到关键词才算
             if k in text:
-                # 优先级逻辑：保留匹配到的最长/最具体的关键词所属的话题
                 if len(k) > max_keyword_len:
                     detected_topic = topic
                     max_keyword_len = len(k)
@@ -145,8 +160,7 @@ def calculate_score_and_tag(item):
         base_score += 2000
         base_score *= 1.5
     else:
-        # 📉 General 惩罚：没营养的水贴，分数打对折
-        # 防止马斯克的普通推文刷屏
+        # 📉 General 惩罚
         base_score *= 0.5 
 
     # 4. 政治排毒 (Nuclear Detox)
@@ -157,7 +171,6 @@ def calculate_score_and_tag(item):
             break
             
     if has_noise:
-        # 检查是否有免死金牌 (宏观豁免)
         is_immune = False
         for safe in MACRO_IMMUNITY:
             if safe in text:
@@ -165,8 +178,8 @@ def calculate_score_and_tag(item):
                 break
         
         if not is_immune:
-            base_score *= 0.1 # 💣 无豁免的政治噪音，直接打1折
-            detected_topic = "Politics" # 强制标记
+            base_score *= 0.1 # 💣 无豁免的噪音
+            detected_topic = "Politics" # 强制归类为(坏)政治
             
     # 5. VIP 加成
     for vip in VIP_AUTHORS:
@@ -205,7 +218,6 @@ def get_hot_items(supabase, table_name):
     scored_tweets.sort(key=lambda x: x['_score'], reverse=True)
     
     # 4. 🛡️ 多样性熔断 (Diversity Breaker)
-    # 限制单人霸榜，每人最多保留前 3 条
     final_list = []
     author_counts = {}
     
@@ -220,31 +232,25 @@ def get_hot_items(supabase, table_name):
         final_list.append(t)
         author_counts[author] = author_counts.get(author, 0) + 1
         
-    # 5. 生成战报 (单张大表)
+    # 5. 生成战报
     header = "| 信号 | 🏷️ 标签 | 热度 | 博主 | 摘要 | 🔗 |\n| :--- | :--- | :--- | :--- | :--- | :--- |"
     rows = []
     
     for t in final_list:
         score_display = fmt_k(t['_score'])
         
-        # 标签美化
         topic_raw = t['_topic']
-        if topic_raw == "General": 
-            topic_str = "General" 
-        elif topic_raw == "Politics":
-            topic_str = "Politics"
+        if topic_raw in ["General"]: 
+            topic_str = topic_raw
         else: 
-            topic_str = f"**{topic_raw}**" # 硬核标签加粗显示
+            topic_str = f"**{topic_raw}**"
         
-        # 热度垂直排版
         heat = f"❤️ {fmt_k(t.get('likes',0))}<br>🔁 {fmt_k(t.get('retweets',0))}" 
         
         user = t['user_name']
-        # 智能摘要：截取前70字符，去除换行
         text = t['full_text'].replace('\n', ' ')[:70] + "..."
         url = t['url']
         
         rows.append(f"| **{score_display}** | {topic_str} | {heat} | {user} | {text} | [🔗]({url}) |")
 
-    # 返回给 Refinery 的统一格式
     return {"🏆 全域精选 (Top 30)": {"header": header, "rows": rows}}
