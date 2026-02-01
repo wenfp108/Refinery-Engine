@@ -1,13 +1,6 @@
-# 核心数据处理：支持归档为 Parquet
 pandas
 pyarrow
-
-# 数据库连接：与 Supabase 交互
 supabase
-
-# 跨库搬运：操控 GitHub 私人仓库 API
 PyGithub
-
-# 基础网络与时间纠偏
 requests
 pytz
