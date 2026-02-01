@@ -1,4 +1,6 @@
 import os, json, base64, requests, importlib.util, sys
+import pandas as pd # ✅ 新增
+import io # ✅ 新增
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from github import Github, Auth
@@ -133,11 +135,16 @@ def generate_hot_reports(processors_config):
     except Exception as e: 
         print(f"❌ 写入 {report_path} 失败: {e}")
 
-# === 🚜 4. 滚动收割 ===
+# === 🚜 4. 滚动收割 (修复版：先归档，后删除) ===
 def perform_grand_harvest(processors_config):
-    print("⏰ 触发每日滚动收割...")
+    print("⏰ 触发每日滚动收割 (Archive & Purge)...")
+    
+    # 设定 7 天前的截止线
     cutoff_date = (datetime.now() - timedelta(days=7))
     cutoff_str = cutoff_date.isoformat()
+    date_tag = cutoff_date.strftime('%Y%m%d')
+
+    # 1. 清理旧战报 (保持不变)
     try:
         all_reports = private_repo.get_contents("reports")
         for report in all_reports:
@@ -146,12 +153,66 @@ def perform_grand_harvest(processors_config):
             cutoff_date_str = cutoff_date.strftime('%Y%m%d')
             if len(file_date_str) == 8 and file_date_str.isdigit() and file_date_str < cutoff_date_str:
                 private_repo.delete_file(report.path, "🗑️ Cleanup old report", report.sha)
-    except: pass
+    except Exception as e: pass
+
+    # 2. 核心修复：归档数据到 Parquet
     for name, config in processors_config.items():
         table = config["table_name"]
+        print(f"📦 正在处理表: {table} ...")
+        
         try:
+            # A. 捞出即将被删除的数据
+            # Supabase 默认一次取 1000 条，如果数据量大可能需要分页，但作为每日归档通常够用
+            res = supabase.table(table).select("*").lt("bj_time", cutoff_str).execute()
+            data = res.data
+            
+            if not data:
+                print(f"   - {table}: 无过期数据，跳过归档。")
+                continue
+                
+            # B. 转换为 Parquet (这是最关键的一步)
+            df = pd.DataFrame(data)
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False, engine='pyarrow', compression='snappy')
+            content_bytes = buffer.getvalue()
+            
+            # C. 上传到 Central Bank 的 archive 目录
+            # 路径示例: archive/2026/02/twitter_logs_20260201.parquet
+            year_month = cutoff_date.strftime('%Y/%m')
+            archive_path = f"archive/{year_month}/{table}_{date_tag}.parquet"
+            
+            try:
+                # 尝试创建文件
+                private_repo.create_file(
+                    path=archive_path,
+                    message=f"🏛️ Archive: {table} data for {date_tag}",
+                    content=content_bytes,
+                    branch="main" 
+                )
+                print(f"   ✅ 已归档: {archive_path} ({len(data)} rows)")
+            except Exception as e:
+                # 如果文件已存在 (比如重跑任务)，则更新它
+                if "422" in str(e) or "already exists" in str(e):
+                    old_file = private_repo.get_contents(archive_path)
+                    private_repo.update_file(
+                        path=archive_path,
+                        message=f"🏛️ Update Archive: {table} data",
+                        content=content_bytes,
+                        sha=old_file.sha
+                    )
+                    print(f"   ✅ 已更新归档: {archive_path}")
+                else:
+                    print(f"   ❌ 归档上传失败: {e}")
+                    continue # 上传失败就不要删除数据！直接跳过
+            
+            # D. 确认归档成功后，执行删除 (Safe Delete)
             supabase.table(table).delete().lt("bj_time", cutoff_str).execute()
-        except: pass
+            print(f"   🗑️ 已从数据库清理 {len(data)} 条旧数据")
+
+        except Exception as e:
+            print(f"⚠️ 处理表 {table} 时发生异常: {e}")
+            # 发生任何错误都不执行删除，确保数据安全
+            pass
 
 # === 🏦 5. 搬运逻辑 ===
 def process_and_upload(path, sha, config):
