@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 TABLE_NAME = "polymarket_logs"
 RADAR_TARGET_TOTAL = 50  
 
+# 🎨 美化工具
 def fmt_k(num, prefix=""):
     if not num: return "-"
     try: n = float(num)
@@ -35,6 +36,7 @@ def process(raw_data, path):
     elif isinstance(raw_data, list): items = raw_data
     else: items = [raw_data]
     
+    # 强制刷新时间戳
     force_now_time = (datetime.utcnow() + timedelta(hours=8)).isoformat()
     
     for item in items:
@@ -90,87 +92,16 @@ def get_hot_items(supabase, table_name):
         all_data = res.data if res.data else []
     except Exception as e: return {}
     if not all_data: return {}
-    
-    sniper_pool = [i for i in all_data if i.get('engine') == 'sniper']
-    radar_pool = [i for i in all_data if i.get('engine') == 'radar']
-    sector_matrix = {}
 
-    # 全局去重集合
-    global_seen_slugs = set()
-
-    def anti_flood_filter(items):
-        grouped = {}
-        for i in items:
-            s = i['slug']
-            if s not in grouped: grouped[s] = []
-            grouped[s].append(i)
-        final = []
-        for s, rows in grouped.items():
-            for r in rows: r['_temp_score'] = calculate_score(r)
-            rows.sort(key=lambda x: x['_temp_score'], reverse=True)
-            final.extend(rows[:2])
-        return final
-
-    def build_markdown(items):
-        header = "| 信号 | 标题 | 问题 | Prices | Vol | Liq | 24h | Tags |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
-        rows = []
-        for i in items:
-            signal = fmt_k(i['_temp_score'])
-            title = str(i.get('title', '-'))[:20].replace('|', '') 
-            q_text = str(i.get('question', '-'))[:40].replace('|', '') + "..."
-            question = f"[{q_text}](https://polymarket.com/event/{i['slug']})"
-            prices = get_win_rate_str(i['prices'])
-            vol = fmt_k(i.get('volume', 0), '$')
-            liq = fmt_k(i.get('liquidity', 0), '$')
-            v24 = fmt_k(i.get('vol24h', 0), '$')
-            tags = ", ".join(i.get('strategy_tags', []))[:15]
-            row = f"| **{signal}** | {title} | {question} | {prices} | {vol} | {liq} | {v24} | {tags} |"
-            rows.append(row)
-            global_seen_slugs.add(i['slug'])
-        return {"header": header, "rows": rows}
-
-    if sniper_pool:
-        refined = anti_flood_filter(sniper_pool)
-        refined.sort(key=lambda x: x['_temp_score'], reverse=True)
-        sector_matrix["🎯 SNIPER (核心监控)"] = build_markdown(refined)
-
-    # 🔥🔥 修改点：将 Politics 移到最后，优先显示其他板块 🔥🔥
-    SECTORS_LIST = [
-        "Geopolitics", 
-        "Science", 
-        "Climate-Science", 
-        "Tech", 
-        "Finance", 
-        "Crypto", 
-        "Economy",
-        "Politics" # <--- 移到最后
-    ]
-    
-    MAP = {
-        'POLITICS': 'Politics', 
-        'GEOPOLITICS': 'Geopolitics', 
-        'TECH': 'Tech', 
-        'FINANCE': 'Finance', 
-        'CRYPTO': 'Crypto',
-        'SCIENCE': 'Science', 
-        'ECONOMY': 'Economy',
-        'BUSINESS': 'Economy',
-        'CLIMATE': 'Climate-Science',
-        'GLOBAL WARMING': 'Climate-Science',
-        'ENVIRONMENT': 'Climate-Science'
-    }
-
-    if radar_pool:
-        for s in SECTORS_LIST:
-            pool = [
-                i for i in radar_pool 
-                if (MAP.get(i.get('category'), 'Other') == s or i.get('category') == s.upper())
-                and i['slug'] not in global_seen_slugs
-            ]
-            if not pool: continue
-            refined = anti_flood_filter(pool)
-            refined.sort(key=lambda x: x['_temp_score'], reverse=True)
-            quota = max(3, math.ceil((len(pool) / len(radar_pool)) * RADAR_TARGET_TOTAL))
-            sector_matrix[s] = build_markdown(refined[:quota])
-
-    return sector_matrix
+    # 🔥🔥 核心去重：只保留每个问题的最新快照 🔥🔥
+    def deduplicate_snapshots(items):
+        latest_map = {}
+        for item in items:
+            # 唯一标识：slug (市场) + question (具体问题)
+            # 这样就能区分 "Bitcoin > 80k" 和 "Bitcoin > 90k"
+            unique_key = f"{item['slug']}_{item['question']}"
+            
+            if unique_key not in latest_map:
+                latest_map[unique_key] = item
+            else:
+                #
