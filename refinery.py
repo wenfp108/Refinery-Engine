@@ -36,7 +36,7 @@ def get_all_processors():
             except Exception as e: print(f"⚠️ 插件 {name} 加载失败: {e}")
     return procs
 
-# === ⏱️ 辅助：检查数据新鲜度 (防NULL版) ===
+# === ⏱️ 辅助：检查数据新鲜度 ===
 def get_data_freshness(table_name):
     try:
         res = supabase.table(table_name)\
@@ -67,7 +67,7 @@ def get_data_freshness(table_name):
     except Exception as e:
         return (True, 0, "CheckError")
 
-# === 🔥 3. 战报工厂 (只负责输出) ===
+# === 🔥 3. 战报工厂 (傻瓜打印模式) ===
 
 def generate_hot_reports(processors_config):
     bj_now = datetime.now(timezone(timedelta(hours=8)))
@@ -92,31 +92,29 @@ def generate_hot_reports(processors_config):
                     md_report += f"> *距上次更新已过 {int(mins_ago/60)} 小时，暂无新数据。*\n\n"
                     continue 
 
-                sector_matrix = config["module"].get_hot_items(supabase, table)
-                if not sector_matrix: continue
+                # 🔥 关键修改：直接获取包含 header 和 rows 的字典
+                sector_data = config["module"].get_hot_items(supabase, table)
+                if not sector_data: continue
 
                 has_content = True
                 active_sources_count += 1
                 md_report += f"## 📡 来源：{source_name.upper()}\n"
                 
-                for sector, items in sector_matrix.items():
+                for sector, data in sector_data.items():
                     md_report += f"### 🏷️ 板块：{sector}\n"
-                    # 🔥 六列标准表格
-                    md_report += "| 信号 | 资金/热度 | 源头 | 标签 | 关键情报摘要 | 🔗 |\n"
-                    md_report += "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
                     
-                    for item in items:
-                        # 🔥 直接读取插件处理好的 display 字段
-                        col_score = item.get('display_score', '-')
-                        col_heat = item.get('display_heat', '-')
-                        col_source = item.get('display_source', 'Unknown')
-                        col_tags = item.get('display_tags', '')
-                        col_text = item.get('display_summary', 'No Content')
-                        col_url = item.get('url', '#')
-                        
-                        md_report += f"| **{col_score}** | {col_heat} | {col_source} | {col_tags} | {col_text} | [🔗]({col_url}) |\n"
+                    # 🔥 傻瓜式输出：插件给什么表头，就印什么表头
+                    if "header" in data:
+                        md_report += data["header"] + "\n"
+                    
+                    # 🔥 傻瓜式输出：插件给什么行，就印什么行
+                    if "rows" in data and isinstance(data["rows"], list):
+                        for row in data["rows"]:
+                            md_report += row + "\n"
+                    
                     md_report += "\n"
             except Exception as e:
+                print(f"⚠️ {source_name} 渲染异常: {e}")
                 pass 
 
     if not has_content:
