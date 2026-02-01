@@ -135,7 +135,7 @@ def generate_hot_reports(processors_config):
     except Exception as e: 
         print(f"❌ 写入 {report_path} 失败: {e}")
 
-# === 🚜 4. 滚动收割 (安全归档版) ===
+# === 🚜 4. 滚动收割 (修改版：永久保留 MD 战报) ===
 def perform_grand_harvest(processors_config):
     print("⏰ 触发每日滚动收割 (Archive & Purge)...")
     
@@ -144,16 +144,16 @@ def perform_grand_harvest(processors_config):
     cutoff_str = cutoff_date.isoformat()
     date_tag = cutoff_date.strftime('%Y%m%d')
 
-    # 1. 清理旧战报 (文件系统清理)
-    try:
-        all_reports = private_repo.get_contents("reports")
-        for report in all_reports:
-            if not report.name.endswith(".md"): continue
-            file_date_str = report.name[:10].replace('-', '') 
-            cutoff_date_str = cutoff_date.strftime('%Y%m%d')
-            if len(file_date_str) == 8 and file_date_str.isdigit() and file_date_str < cutoff_date_str:
-                private_repo.delete_file(report.path, "🗑️ Cleanup old report", report.sha)
-    except Exception as e: pass
+    # 1. 🛑 [已封印] 这里的删除代码已被注释，战报将永久保留
+    # try:
+    #     all_reports = private_repo.get_contents("reports")
+    #     for report in all_reports:
+    #         if not report.name.endswith(".md"): continue
+    #         file_date_str = report.name[:10].replace('-', '') 
+    #         cutoff_date_str = cutoff_date.strftime('%Y%m%d')
+    #         if len(file_date_str) == 8 and file_date_str.isdigit() and file_date_str < cutoff_date_str:
+    #             private_repo.delete_file(report.path, "🗑️ Cleanup old report", report.sha)
+    # except Exception as e: pass
 
     # 2. 核心逻辑：安全归档 + 原子删除
     for name, config in processors_config.items():
@@ -161,7 +161,7 @@ def perform_grand_harvest(processors_config):
         print(f"📦 正在处理表: {table} ...")
         
         try:
-            # A. 捞出即将被删除的数据 (Limit 默认 1000)
+            # A. 捞出即将被删除的数据
             res = supabase.table(table).select("*").lt("bj_time", cutoff_str).execute()
             data = res.data
             
@@ -169,14 +169,13 @@ def perform_grand_harvest(processors_config):
                 print(f"   - {table}: 无过期数据，无需操作。")
                 continue
                 
-            # B. 转换为 Parquet (金库砖块)
+            # B. 转换为 Parquet
             df = pd.DataFrame(data)
             buffer = io.BytesIO()
             df.to_parquet(buffer, index=False, engine='pyarrow', compression='snappy')
             content_bytes = buffer.getvalue()
             
-            # C. 上传到 Central Bank 的 archive 目录
-            # 为了防止文件名冲突覆盖，加上时间戳甚至小时
+            # C. 上传到 Central Bank
             year_month = cutoff_date.strftime('%Y/%m')
             hour_tag = datetime.now().strftime('%H%M%S') 
             archive_path = f"archive/{year_month}/{table}_{date_tag}_{hour_tag}.parquet"
@@ -191,15 +190,12 @@ def perform_grand_harvest(processors_config):
                 print(f"   ✅ 已归档: {archive_path} ({len(data)} rows)")
             except Exception as e:
                 print(f"   ❌ 归档上传失败: {e}")
-                # 🚨 熔断：上传失败直接跳过删除，保护数据！
+                # 🚨 熔断：上传失败直接跳过删除
                 continue 
             
-            # D. 安全删除：只删除已归档的 ID (原子性保证)
-            # 提取出刚刚成功归档的那批 ID
+            # D. 安全删除：只删除已归档的 ID
             archived_ids = [item['id'] for item in data if 'id' in item]
-            
             if archived_ids:
-                # 分批删除，防止 ID 列表过长
                 batch_size = 500
                 for i in range(0, len(archived_ids), batch_size):
                     batch = archived_ids[i : i + batch_size]
