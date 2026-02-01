@@ -1,13 +1,12 @@
 import json
 import math
-import re
 from datetime import datetime, timedelta
 
 TABLE_NAME = "twitter_logs"
-TARGET_TOTAL_QUOTA = 30 
+TARGET_TOTAL_QUOTA = 30  # 🌟 最终只选出全网最好的 30 条
 
 # === 🛑 1. 政治/垃圾噪音词 (核打击) ===
-# 只要出现，分数直接打 1 折
+# 只要出现这些词，分数直接打 1 折（除非有豁免权）
 NOISE_KEYWORDS = [
     "woke", "maga", "democrat", "republican", "leftist", "right wing", "liberal", "conservative",
     "fascist", "communist", "socialist", "pronouns", "dei", "border crisis", "illegal",
@@ -17,7 +16,7 @@ NOISE_KEYWORDS = [
 ]
 
 # === 🔰 2. 宏观豁免词 (免死金牌) ===
-# 政治贴里如果有这些词，说明在聊正事，不降权
+# 政治贴里如果有这些词，说明在聊正事（立法/宏观/监管），不降权
 MACRO_IMMUNITY = [
     "fed", "federal reserve", "powell", "fomc", "rate", "interest", "cut", "hike",
     "tariff", "trade war", "sanction", "export", "import", "duty",
@@ -25,7 +24,7 @@ MACRO_IMMUNITY = [
     "stimulus", "debt", "deficit", "budget", "tax", "treasury", "bond", "yield",
     "bitcoin", "btc", "crypto", "ban", "regulation", "sec", "gensler", "etf",
     "executive order", "veto", "sign", "bill", "act", "law", "legislation",
-    "nominate", "nominee", "appoint", "confirm", "supreme court"
+    "nominate", "nominee", "appoint", "confirm", "supreme court", "ruling"
 ]
 
 # === 🧠 3. 精准话题词库 (权重竞价模式) ===
@@ -40,7 +39,7 @@ TOPIC_RULES = {
         "llm", "transformer", "genai", "generative ai", "inference", "training run", "pre-training",
         "gpt-5", "gpt-4", "claude", "gemini", "llama", "deepseek", "mistral", "anthropic", "openai",
         "nvidia", "nvda", "h100", "blackwell", "cuda", "gpu", "tpu", "asic", "compute",
-        "tsmc", "asml", "semiconductor", "chip", "wafer", "Moore's law",
+        "tsmc", "asml", "semiconductor", "chip", "wafer", "moore's law",
         "spacex", "starship", "falcon", "tesla", "tsla", "fsd", "optimus", "robot",
         "python", "rust", "github", "huggingface", "arxiv", "open source"
     ],
@@ -66,6 +65,7 @@ TOPIC_RULES = {
     ]
 }
 
+# === 🛡️ 4. VIP 白名单 (基础分加成) ===
 VIP_AUTHORS = [
     "Karpathy", "Yann LeCun", "Vitalik", "Paul Graham", "Naval", 
     "Eric Topol", "Huberman", "Lex Fridman", "Sam Altman", "Kobeissi Letter",
@@ -90,8 +90,9 @@ def process(raw_data, path):
     items = raw_data if isinstance(raw_data, list) else [raw_data]
     refined_results = []
     for i in items:
-        # 垃圾过滤：如果正文太短且没有链接，直接丢弃（杀掉 "Yes..." 这种水贴）
+        # 🗑️ 垃圾过滤：杀掉 "Yes..." 这种水贴
         text = i.get('fullText', '')
+        # 如果正文太短(<10字)且不包含链接，直接丢弃
         if len(text) < 10 and 'http' not in text:
             continue
 
@@ -113,12 +114,13 @@ def process(raw_data, path):
         refined_results.append(row)
     return refined_results
 
-# 🔥 核心：上帝权重算法 2.0 🔥
+# 🔥 核心：上帝权重算法 3.0 🔥
 def calculate_score_and_tag(item):
     text = (item.get('full_text') or "").lower()
     user = (item.get('user_name') or "")
     
     # 1. 基础热度 (书签 x10, 转推 x5, 点赞 x1)
+    # 书签权重最高，因为它代表深度阅读和收藏价值
     metrics = item.get('raw_json', {}).get('metrics', {})
     base_score = (metrics.get('retweets', 0) * 5) + \
                  (metrics.get('bookmarks', 0) * 10) + \
@@ -130,24 +132,24 @@ def calculate_score_and_tag(item):
     
     for topic, keywords in TOPIC_RULES.items():
         for k in keywords:
-            # 必须是独立单词匹配，防止 "training" 匹配到 "straining" (虽然英文较少见，但逻辑更严谨)
+            # 必须匹配到关键词才算
             if k in text:
-                # 简单的优先级：如果这个词比之前匹配到的词更长/更具体，就采纳这个分类
+                # 优先级逻辑：保留匹配到的最长/最具体的关键词所属的话题
                 if len(k) > max_keyword_len:
                     detected_topic = topic
                     max_keyword_len = len(k)
     
     # 3. 语义加权 vs 降权
     if detected_topic != "General":
-        # 命中硬核板块：加分
+        # 💎 命中硬核板块：大幅加分
         base_score += 2000
         base_score *= 1.5
     else:
-        # General 惩罚：如果是水贴，分数打对折
-        # 除非它是超级大热点，否则别想挤掉硬核内容
+        # 📉 General 惩罚：没营养的水贴，分数打对折
+        # 防止马斯克的普通推文刷屏
         base_score *= 0.5 
 
-    # 4. 政治排毒
+    # 4. 政治排毒 (Nuclear Detox)
     has_noise = False
     for noise in NOISE_KEYWORDS:
         if noise in text:
@@ -155,13 +157,15 @@ def calculate_score_and_tag(item):
             break
             
     if has_noise:
+        # 检查是否有免死金牌 (宏观豁免)
         is_immune = False
         for safe in MACRO_IMMUNITY:
             if safe in text:
                 is_immune = True
                 break
+        
         if not is_immune:
-            base_score *= 0.1 # 核打击
+            base_score *= 0.1 # 💣 无豁免的政治噪音，直接打1折
             detected_topic = "Politics" # 强制标记
             
     # 5. VIP 加成
@@ -181,6 +185,7 @@ def get_hot_items(supabase, table_name):
 
     if not all_tweets: return {}
 
+    # 1. URL 去重
     unique_map = {}
     for t in all_tweets:
         key = t.get('url') or (t.get('user_name'), t.get('full_text'))
@@ -188,6 +193,7 @@ def get_hot_items(supabase, table_name):
             unique_map[key] = t
     tweets = list(unique_map.values())
 
+    # 2. 算分 & 打标
     scored_tweets = []
     for t in tweets:
         score, topic = calculate_score_and_tag(t)
@@ -195,9 +201,11 @@ def get_hot_items(supabase, table_name):
         t['_topic'] = topic
         scored_tweets.append(t)
         
+    # 3. 全局排序
     scored_tweets.sort(key=lambda x: x['_score'], reverse=True)
     
-    # 🛡️ 多样性熔断 (每人最多 3 条)
+    # 4. 🛡️ 多样性熔断 (Diversity Breaker)
+    # 限制单人霸榜，每人最多保留前 3 条
     final_list = []
     author_counts = {}
     
@@ -212,7 +220,7 @@ def get_hot_items(supabase, table_name):
         final_list.append(t)
         author_counts[author] = author_counts.get(author, 0) + 1
         
-    # 生成大表
+    # 5. 生成战报 (单张大表)
     header = "| 信号 | 🏷️ 标签 | 热度 | 博主 | 摘要 | 🔗 |\n| :--- | :--- | :--- | :--- | :--- | :--- |"
     rows = []
     
@@ -221,14 +229,22 @@ def get_hot_items(supabase, table_name):
         
         # 标签美化
         topic_raw = t['_topic']
-        if topic_raw == "General": topic_str = "General" # 不加粗
-        else: topic_str = f"**{topic_raw}**" # 硬核标签加粗
+        if topic_raw == "General": 
+            topic_str = "General" 
+        elif topic_raw == "Politics":
+            topic_str = "Politics"
+        else: 
+            topic_str = f"**{topic_raw}**" # 硬核标签加粗显示
         
+        # 热度垂直排版
         heat = f"❤️ {fmt_k(t.get('likes',0))}<br>🔁 {fmt_k(t.get('retweets',0))}" 
+        
         user = t['user_name']
+        # 智能摘要：截取前70字符，去除换行
         text = t['full_text'].replace('\n', ' ')[:70] + "..."
         url = t['url']
         
         rows.append(f"| **{score_display}** | {topic_str} | {heat} | {user} | {text} | [🔗]({url}) |")
 
+    # 返回给 Refinery 的统一格式
     return {"🏆 全域精选 (Top 30)": {"header": header, "rows": rows}}
