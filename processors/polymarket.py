@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 TABLE_NAME = "polymarket_logs"
 RADAR_TARGET_TOTAL = 50  
 
-# 🎨 美化工具
 def fmt_k(num, prefix=""):
     if not num: return "-"
     try: n = float(num)
@@ -96,8 +95,7 @@ def get_hot_items(supabase, table_name):
     radar_pool = [i for i in all_data if i.get('engine') == 'radar']
     sector_matrix = {}
 
-    # 🔥 全局去重集合 (独占模式核心)
-    # 用来记录哪些 slug 已经被前面的板块选走了
+    # 全局去重集合
     global_seen_slugs = set()
 
     def anti_flood_filter(items):
@@ -121,39 +119,31 @@ def get_hot_items(supabase, table_name):
             title = str(i.get('title', '-'))[:20].replace('|', '') 
             q_text = str(i.get('question', '-'))[:40].replace('|', '') + "..."
             question = f"[{q_text}](https://polymarket.com/event/{i['slug']})"
-            
             prices = get_win_rate_str(i['prices'])
             vol = fmt_k(i.get('volume', 0), '$')
             liq = fmt_k(i.get('liquidity', 0), '$')
             v24 = fmt_k(i.get('vol24h', 0), '$')
             tags = ", ".join(i.get('strategy_tags', []))[:15]
-
             row = f"| **{signal}** | {title} | {question} | {prices} | {vol} | {liq} | {v24} | {tags} |"
             rows.append(row)
-            
-            # 🔥 记录已使用，防止后续板块重复抓取
             global_seen_slugs.add(i['slug'])
-            
         return {"header": header, "rows": rows}
 
-    # 1. 先处理 Sniper (最高优先级)
     if sniper_pool:
         refined = anti_flood_filter(sniper_pool)
         refined.sort(key=lambda x: x['_temp_score'], reverse=True)
-        # Sniper 是独立区域，不一定要互斥，但为了保险，也可以加入 global_seen_slugs
-        # 也可以不加，看需求。这里暂时不加，让 Sniper 和 Radar 独立。
         sector_matrix["🎯 SNIPER (核心监控)"] = build_markdown(refined)
 
-    # 2. 处理 Radar (必须互斥)
+    # 🔥🔥 修改点：将 Politics 移到最后，优先显示其他板块 🔥🔥
     SECTORS_LIST = [
-        "Politics", 
         "Geopolitics", 
         "Science", 
         "Climate-Science", 
         "Tech", 
         "Finance", 
         "Crypto", 
-        "Economy"
+        "Economy",
+        "Politics" # <--- 移到最后
     ]
     
     MAP = {
@@ -171,24 +161,16 @@ def get_hot_items(supabase, table_name):
     }
 
     if radar_pool:
-        # 严格按照 SECTORS_LIST 的顺序进行抓取
         for s in SECTORS_LIST:
-            # 筛选条件：
-            # 1. 类别匹配
-            # 2. slug 没被之前的板块用过 (not in global_seen_slugs)
             pool = [
                 i for i in radar_pool 
                 if (MAP.get(i.get('category'), 'Other') == s or i.get('category') == s.upper())
-                and i['slug'] not in global_seen_slugs  # <--- 独占去重关键
+                and i['slug'] not in global_seen_slugs
             ]
-            
             if not pool: continue
-            
             refined = anti_flood_filter(pool)
             refined.sort(key=lambda x: x['_temp_score'], reverse=True)
             quota = max(3, math.ceil((len(pool) / len(radar_pool)) * RADAR_TARGET_TOTAL))
-            
-            # 在 build_markdown 里会自动把选中的 slug 加入 global_seen_slugs
             sector_matrix[s] = build_markdown(refined[:quota])
 
     return sector_matrix
