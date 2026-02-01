@@ -4,8 +4,7 @@ from datetime import datetime, timedelta
 
 TABLE_NAME = "twitter_logs"
 
-# 🔥🔥 修改点：调整优先级顺序 🔥🔥
-# Politics 移到最后，防止它吞掉跨板块的推文 (例如 Tech Policy 以前会被 Politics 抢走，现在会留给 Tech)
+# 优先级顺序：Politics 最后，防止吞掉跨界推文
 SECTORS = [
     "Geopolitics", 
     "Science", 
@@ -13,15 +12,15 @@ SECTORS = [
     "Finance", 
     "Crypto", 
     "Economy", 
-    "Politics"  # <--- 压轴登场
+    "Politics" 
 ]
 
 TARGET_TOTAL_QUOTA = 30 
 
 def fmt_k(num):
-    if not num: return "-"
+    if not num: return "0"
     try: n = float(num)
-    except: return "-"
+    except: return "0"
     if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
     if n >= 1_000: return f"{n/1_000:.1f}K"
     return str(int(n))
@@ -79,6 +78,7 @@ def get_hot_items(supabase, table_name):
 
     for t in all_tweets: t['_score'] = calculate_twitter_score(t)
 
+    # 1. URL 去重
     unique_map = {}
     for t in all_tweets:
         key = t.get('url') or (t.get('user_name'), t.get('full_text'))
@@ -87,7 +87,7 @@ def get_hot_items(supabase, table_name):
     deduplicated = list(unique_map.values())
     total = len(deduplicated)
 
-    # 独占分配逻辑 (按照 SECTORS 顺序优先匹配)
+    # 2. 独占分配逻辑
     sector_pools = {s: [] for s in SECTORS}
     for t in deduplicated:
         tags = t.get('tags', [])
@@ -103,15 +103,23 @@ def get_hot_items(supabase, table_name):
         pool.sort(key=lambda x: x['_score'], reverse=True)
         quota = max(3, math.ceil((len(pool) / total) * TARGET_TOTAL_QUOTA))
         
-        header = "| 信号 | 浏览量 | 博主 | 摘要 | 🔗 |\n| :--- | :--- | :--- | :--- | :--- |"
+        # 🔥 修改点：表头改为“互动”，内容显示点赞和转推 🔥
+        header = "| 信号 | 互动 (❤️/🔁) | 博主 | 摘要 | 🔗 |\n| :--- | :--- | :--- | :--- | :--- |"
         rows = []
         for t in pool[:quota]:
             score = fmt_k(t['_score'])
-            views = fmt_k(t.get('views', 0))
+            
+            # 提取点赞和转推
+            likes = fmt_k(t.get('likes', 0))
+            rts = fmt_k(t.get('retweets', 0))
+            # 组合显示
+            heat_display = f"❤️{likes} 🔁{rts}"
+            
             user = t['user_name']
             text = t['full_text'].replace('\n', ' ')[:60] + "..."
             url = t['url']
-            rows.append(f"| **{score}** | 👁️ {views} | {user} | {text} | [🔗]({url}) |")
+            
+            rows.append(f"| **{score}** | {heat_display} | {user} | {text} | [🔗]({url}) |")
         
         intelligence_matrix[sector] = {"header": header, "rows": rows}
 
