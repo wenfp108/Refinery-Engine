@@ -127,22 +127,46 @@ def get_hot_items(supabase, table_name):
 
     # 🔥 2. 构建 8 列宽表
     def build_markdown(items):
-        header = "| 信号 | 标题 | 问题 | Prices | Vol | Liq | 24h | Tags |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
+        # 表头保持不变
+        header = "| 信号 | 标题 | 问题 | Prices (Yes/No) | Vol | Liq | 24h | Tags |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |"
         rows = []
         for i in items:
+            # 1. 信号保持不变
             signal = fmt_k(i['_temp_score'])
-            title = str(i.get('title', '-'))[:20].replace('|', '') 
-            q_text = str(i.get('question', '-'))[:40].replace('|', '') + "..."
-            question = f"[{q_text}](https://polymarket.com/event/{i['slug']})"
-            prices = get_win_rate_str(i['prices'])
+            
+            # 2. 修改标题逻辑：放宽限制到 60 字符，防止太短看不清
+            # 同时移除换行符，防止破坏表格格式
+            raw_title = str(i.get('title', '-')).replace('|', '').replace('\n', ' ')
+            title = raw_title[:60] + ('...' if len(raw_title) > 60 else '')
+            
+            # 3. 问题链接保持不变，稍微放宽长度
+            q_text = str(i.get('question', '-')).replace('|', '').replace('\n', ' ')
+            q_text_short = q_text[:50] + "..." # 稍微加长一点
+            question = f"[{q_text_short}](https://polymarket.com/event/{i['slug']})"
+            
+            # 4. 🔥 核心修改：价格显示
+            # 假设 i['prices'] 是类似 "Yes: 0.5% | No: 99.5%" 的字符串
+            # 必须把中间的 '|' 替换掉，否则 Markdown 表格会崩坏
+            # 方案 A: 用斜杠 (Yes: 0.5% / No: 99.5%)
+            raw_prices = str(i.get('prices', 'N/A'))
+            prices = raw_prices.replace('|', '/') 
+            
+            # 方案 B (可选): 如果支持 HTML，可以用 <br> 换行显示更清晰
+            # prices = raw_prices.replace('|', '<br>') 
+
+            # 其他数值保持不变
             vol = fmt_k(i.get('volume', 0), '$')
             liq = fmt_k(i.get('liquidity', 0), '$')
             v24 = fmt_k(i.get('vol24h', 0), '$')
-            tags = ", ".join(i.get('strategy_tags', []))[:15]
+            tags = ", ".join(i.get('strategy_tags', []))[:20] # Tags 也稍微放宽一点
 
             row = f"| **{signal}** | {title} | {question} | {prices} | {vol} | {liq} | {v24} | {tags} |"
             rows.append(row)
-            global_seen_slugs.add(i['slug'])
+            
+            # 记录 slug (保持原逻辑)
+            if 'slug' in i:
+                global_seen_slugs.add(i['slug'])
+                
         return {"header": header, "rows": rows}
 
     if sniper_pool:
