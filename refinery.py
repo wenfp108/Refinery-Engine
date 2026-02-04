@@ -1,6 +1,6 @@
 import os, json, base64, requests, importlib.util, sys
-import pandas as pd  # 📦 核心组件：数据处理
-import io            # 📦 核心组件：内存文件流
+import pandas as pd  # 📦 核心组件
+import io            # 📦 核心组件
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from github import Github, Auth
@@ -69,25 +69,25 @@ def get_data_freshness(table_name):
     except Exception as e:
         return (True, 0, "CheckError")
 
-# === 🔥 3. 战报工厂 (仅修改：路径文件夹结构) ===
+# === 🔥 3. 战报工厂 (已修改：自动存入日期文件夹) ===
 
 def generate_hot_reports(processors_config):
     bj_now = datetime.now(timezone(timedelta(hours=8)))
     
-    # --- 📂 路径重构核心逻辑 ---
+    # --- 📂 [核心修改] 路径重构逻辑 ---
     year = bj_now.strftime('%Y')
     month = bj_now.strftime('%m')
     day = bj_now.strftime('%d')
     hour = bj_now.strftime('%H')
     
-    # 结果示例: reports/2026/02/05/17点战报.md
+    # 结果: reports/2026/02/05/17点战报.md
     file_name = f"{hour}点战报.md"
     report_path = f"reports/{year}/{month}/{day}/{file_name}"
     
     date_display = bj_now.strftime('%Y-%m-%d %H:%M')
     
     md_report = f"# 🚀 Architect's Alpha 情报审计 ({date_display})\n\n"
-    md_report += "> **机制说明**：全源智能去重 | 资金流向优先 | 自动折叠旧源\n\n"
+    md_report += "> **机制说明**：全源智能去重 | 资金流向优先 | 自动归档\n\n"
 
     has_content = False
     active_sources_count = 0
@@ -98,9 +98,8 @@ def generate_hot_reports(processors_config):
                 table = config["table_name"]
                 is_fresh, mins_ago, last_update_time = get_data_freshness(table)
                 
-                if not is_fresh:
-                    md_report += f"## 💤 来源：{source_name.upper()} (上次更新: {last_update_time})\n"
-                    md_report += f"> *距上次更新已过 {int(mins_ago/60)} 小时，暂无新数据。*\n\n"
+                # 如果超过 12 小时没数据，且不是强制模式，则跳过
+                if not is_fresh and mins_ago > 720: 
                     continue 
 
                 sector_data = config["module"].get_hot_items(supabase, table)
@@ -108,7 +107,9 @@ def generate_hot_reports(processors_config):
 
                 has_content = True
                 active_sources_count += 1
-                md_report += f"## 📡 来源：{source_name.upper()}\n"
+                
+                freshness_tag = "" if is_fresh else f" (⚠️ 数据滞后 {int(mins_ago/60)}h)"
+                md_report += f"## 📡 来源：{source_name.upper()}{freshness_tag}\n"
                 
                 for sector, data in sector_data.items():
                     md_report += f"### 🏷️ 板块：{sector}\n"
@@ -117,7 +118,6 @@ def generate_hot_reports(processors_config):
                         if "header" in data: md_report += data["header"] + "\n"
                         if "rows" in data and isinstance(data["rows"], list):
                             for row in data["rows"]: md_report += row + "\n"
-                    
                     elif isinstance(data, list):
                         md_report += "| 信号 | 内容 | 🔗 |\n| :--- | :--- | :--- |\n"
                         for item in data:
@@ -146,22 +146,18 @@ def generate_hot_reports(processors_config):
 # === 🚜 4. 滚动收割 (保持不变) ===
 def perform_grand_harvest(processors_config):
     print("⏰ 触发每日滚动收割 (Archive & Purge)...")
-    
     cutoff_date = (datetime.now() - timedelta(days=7))
     cutoff_str = cutoff_date.isoformat()
     date_tag = cutoff_date.strftime('%Y%m%d')
 
     for name, config in processors_config.items():
         table = config["table_name"]
-        print(f"📦 正在处理表: {table} ...")
         
         try:
             res = supabase.table(table).select("*").lt("bj_time", cutoff_str).execute()
             data = res.data
             
-            if not data:
-                print(f"   - {table}: 无过期数据，无需操作。")
-                continue
+            if not data: continue
                 
             df = pd.DataFrame(data)
             buffer = io.BytesIO()
@@ -179,23 +175,16 @@ def perform_grand_harvest(processors_config):
                     content=content_bytes,
                     branch="main" 
                 )
-                print(f"   ✅ 已归档: {archive_path} ({len(data)} rows)")
+                
+                # 只在归档成功后删除
+                ids = [item['id'] for item in data if 'id' in item]
+                if ids:
+                    for i in range(0, len(ids), 500):
+                        supabase.table(table).delete().in_("id", ids[i:i+500]).execute()
+                    print(f"   🗑️ {table}: 已清理 {len(ids)} 条")
             except Exception as e:
-                print(f"   ❌ 归档上传失败: {e}")
-                continue 
-            
-            archived_ids = [item['id'] for item in data if 'id' in item]
-            if archived_ids:
-                batch_size = 500
-                for i in range(0, len(archived_ids), batch_size):
-                    batch = archived_ids[i : i + batch_size]
-                    supabase.table(table).delete().in_("id", batch).execute()
-                print(f"   🗑️ 已安全核销 {len(archived_ids)} 条数据")
-            else:
-                print("   ⚠️ 数据无 ID 字段，跳过删除以防误判。")
-
+                print(f"   ❌ {table} 归档失败: {e}")
         except Exception as e:
-            print(f"⚠️ 处理表 {table} 时发生异常: {e}")
             pass
 
 # === 🏦 5. 搬运逻辑 (保持不变) ===
@@ -227,7 +216,6 @@ def sync_bank_to_sql(processors_config, full_scan=False):
     stats = {name: 0 for name in processors_config.keys()}
     
     if full_scan:
-        print("⚡ [全量模式] ...")
         try:
             contents = private_repo.get_contents("")
             while contents:
@@ -252,9 +240,7 @@ def sync_bank_to_sql(processors_config, full_scan=False):
                         stats[source_key] += added
 
     for source, count in stats.items():
-        source_display = f"{source:<12}"
-        if count > 0: print(f"✅ {source_display} | 现状：发现新动态 (+{count})")
-        else: print(f"➖ {source_display} | 现状：无新文件变动 (+0)")
+        if count > 0: print(f"✅ {source} (+{count})")
 
 if __name__ == "__main__":
     all_procs = get_all_processors()
