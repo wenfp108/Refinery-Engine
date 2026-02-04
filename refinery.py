@@ -69,12 +69,21 @@ def get_data_freshness(table_name):
     except Exception as e:
         return (True, 0, "CheckError")
 
-# === 🔥 3. 战报工厂 (通用渲染模式) ===
+# === 🔥 3. 战报工厂 (仅修改：路径文件夹结构) ===
 
 def generate_hot_reports(processors_config):
     bj_now = datetime.now(timezone(timedelta(hours=8)))
-    file_name = bj_now.strftime('%Y-%m-%d-%H') + ".md"
-    report_path = f"reports/{file_name}"
+    
+    # --- 📂 路径重构核心逻辑 ---
+    year = bj_now.strftime('%Y')
+    month = bj_now.strftime('%m')
+    day = bj_now.strftime('%d')
+    hour = bj_now.strftime('%H')
+    
+    # 结果示例: reports/2026/02/05/17点战报.md
+    file_name = f"{hour}点战报.md"
+    report_path = f"reports/{year}/{month}/{day}/{file_name}"
+    
     date_display = bj_now.strftime('%Y-%m-%d %H:%M')
     
     md_report = f"# 🚀 Architect's Alpha 情报审计 ({date_display})\n\n"
@@ -104,13 +113,11 @@ def generate_hot_reports(processors_config):
                 for sector, data in sector_data.items():
                     md_report += f"### 🏷️ 板块：{sector}\n"
                     
-                    # 🔥 渲染逻辑：优先使用插件提供的 header 和 rows
                     if isinstance(data, dict):
                         if "header" in data: md_report += data["header"] + "\n"
                         if "rows" in data and isinstance(data["rows"], list):
                             for row in data["rows"]: md_report += row + "\n"
                     
-                    # 兼容旧版列表格式
                     elif isinstance(data, list):
                         md_report += "| 信号 | 内容 | 🔗 |\n| :--- | :--- | :--- |\n"
                         for item in data:
@@ -124,6 +131,7 @@ def generate_hot_reports(processors_config):
     if not has_content:
         md_report += "\n\n**🛑 本轮扫描全域静默，请查阅历史归档。**"
 
+    # --- 写入战报文件 (路径已变) ---
     try:
         try:
             old = private_repo.get_contents(report_path)
@@ -135,33 +143,19 @@ def generate_hot_reports(processors_config):
     except Exception as e: 
         print(f"❌ 写入 {report_path} 失败: {e}")
 
-# === 🚜 4. 滚动收割 (修改版：永久保留 MD 战报) ===
+# === 🚜 4. 滚动收割 (保持不变) ===
 def perform_grand_harvest(processors_config):
     print("⏰ 触发每日滚动收割 (Archive & Purge)...")
     
-    # 设定 7 天前的截止线
     cutoff_date = (datetime.now() - timedelta(days=7))
     cutoff_str = cutoff_date.isoformat()
     date_tag = cutoff_date.strftime('%Y%m%d')
 
-    # 1. 🛑 [已封印] 这里的删除代码已被注释，战报将永久保留
-    # try:
-    #     all_reports = private_repo.get_contents("reports")
-    #     for report in all_reports:
-    #         if not report.name.endswith(".md"): continue
-    #         file_date_str = report.name[:10].replace('-', '') 
-    #         cutoff_date_str = cutoff_date.strftime('%Y%m%d')
-    #         if len(file_date_str) == 8 and file_date_str.isdigit() and file_date_str < cutoff_date_str:
-    #             private_repo.delete_file(report.path, "🗑️ Cleanup old report", report.sha)
-    # except Exception as e: pass
-
-    # 2. 核心逻辑：安全归档 + 原子删除
     for name, config in processors_config.items():
         table = config["table_name"]
         print(f"📦 正在处理表: {table} ...")
         
         try:
-            # A. 捞出即将被删除的数据
             res = supabase.table(table).select("*").lt("bj_time", cutoff_str).execute()
             data = res.data
             
@@ -169,13 +163,11 @@ def perform_grand_harvest(processors_config):
                 print(f"   - {table}: 无过期数据，无需操作。")
                 continue
                 
-            # B. 转换为 Parquet
             df = pd.DataFrame(data)
             buffer = io.BytesIO()
             df.to_parquet(buffer, index=False, engine='pyarrow', compression='snappy')
             content_bytes = buffer.getvalue()
             
-            # C. 上传到 Central Bank
             year_month = cutoff_date.strftime('%Y/%m')
             hour_tag = datetime.now().strftime('%H%M%S') 
             archive_path = f"archive/{year_month}/{table}_{date_tag}_{hour_tag}.parquet"
@@ -190,10 +182,8 @@ def perform_grand_harvest(processors_config):
                 print(f"   ✅ 已归档: {archive_path} ({len(data)} rows)")
             except Exception as e:
                 print(f"   ❌ 归档上传失败: {e}")
-                # 🚨 熔断：上传失败直接跳过删除
                 continue 
             
-            # D. 安全删除：只删除已归档的 ID
             archived_ids = [item['id'] for item in data if 'id' in item]
             if archived_ids:
                 batch_size = 500
@@ -208,7 +198,7 @@ def perform_grand_harvest(processors_config):
             print(f"⚠️ 处理表 {table} 时发生异常: {e}")
             pass
 
-# === 🏦 5. 搬运逻辑 ===
+# === 🏦 5. 搬运逻辑 (保持不变) ===
 def process_and_upload(path, sha, config):
     check = supabase.table("processed_files").select("file_sha").eq("file_sha", sha).execute()
     if check.data: return 0
