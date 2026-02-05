@@ -5,7 +5,7 @@ import os
 import importlib.util
 import sys
 from pathlib import Path
-from datetime import datetime  # ✅ 新增：用于生成月份文件名
+from datetime import datetime
 
 class UniversalFactory:
     def __init__(self, masters_path="masters"):
@@ -55,7 +55,7 @@ class UniversalFactory:
         return hashlib.sha256(content.encode()).hexdigest()
 
     def process_and_ship(self, input_raw, vault_path, batch_size=2000):
-        """加工并送回中央银行 (流式写入 + 按月分卷版)"""
+        """加工并送回中央银行 (流式写入 + 按月分卷 + 防崩溃版)"""
         input_path = Path(input_raw)
         vault_dir = Path(vault_path)
         
@@ -71,8 +71,7 @@ class UniversalFactory:
             print(f"❌ Parquet 读取失败: {e}")
             return
 
-        # 🔥 [关键修改] 动态生成带月份的文件名，防止单文件过大
-        # 结果示例: instructions/teachings_202602.jsonl
+        # 🔥 动态生成带月份的文件名，防止单文件过大撞击 GitHub 限制
         current_month = datetime.now().strftime('%Y%m') 
         filename = f"teachings_{current_month}.jsonl"
         
@@ -90,8 +89,10 @@ class UniversalFactory:
         with open(output_file, 'a', encoding='utf-8') as f:
             for row_dict in rows:
                 ref_id = self.generate_ref_id(row_dict)
-                # 兼容不同数据源的标题字段 (Polymarket用eventTitle, Twitter用full_text前20字)
-                event_title = row_dict.get('eventTitle') or row_dict.get('full_text', '')[:20] or '未命名信号'
+                
+                # ✅ 核心修复：强制转为字符串处理，防止 NoneType [:20] 报错
+                raw_title = row_dict.get('eventTitle') or row_dict.get('full_text') or row_dict.get('repo_name') or '未命名信号'
+                event_title = str(raw_title)[:50].replace('\n', ' ')
 
                 # 并行审计 (逻辑层面)
                 for master_name, master_mod in self.masters.items():
@@ -102,7 +103,6 @@ class UniversalFactory:
                         # 🛡️ 熔断保护：防止单个大师报错卡死整个流程
                         thought, output = master_mod.audit(row_dict)
 
-                        # 只有大师有话要说(返回非空)时才记录
                         if thought or output:
                             entry = {
                                 "ref_id": ref_id,
@@ -116,7 +116,6 @@ class UniversalFactory:
                         
                     except Exception as e:
                         # 仅打印错误，不中断循环
-                        # print(f"⚠️ [{master_name}] 审计失败: {e}") 
                         pass
 
                 # 🚀 内存保护: 积攒到 batch_size 再写入硬盘
