@@ -1,28 +1,40 @@
 import pandas as pd
-import hashlib, json, os, requests, subprocess, time
+import hashlib, json, os, requests, subprocess, time, sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from supabase import create_client
+import importlib.util
 
 class UniversalFactory:
     def __init__(self, masters_path="masters"):
         self.masters_path = Path(masters_path)
         self.masters = self._load_masters()
         # API 与 数据库配置
-        self.api_key = os.environ.get("SILICON_FLOW_KEY")
+        self.api_key = os.environ.get("SILICON_FLOW_KEY") # 确保环境变量里有这个
         self.api_url = "https://api.siliconflow.cn/v1/chat/completions"
         self.supabase_url = os.environ.get("SUPABASE_URL")
         self.supabase_key = os.environ.get("SUPABASE_KEY")
         self.vault_path = None
         
+        # 🛡️ 校验配置
+        if not all([self.api_key, self.supabase_url, self.supabase_key]):
+            print("❌ [Factory] 启动失败: 环境变量缺失 (SILICON_FLOW_KEY, SUPABASE_URL, SUPABASE_KEY)")
+            sys.exit(1)
+        
         # 🤖 模型设定：全员 V3，废弃 Scout
         self.v3_model = "deepseek-ai/DeepSeek-V3"
 
     def _load_masters(self):
-        import importlib.util
         masters = {}
-        if not self.masters_path.exists(): return masters
+        if not self.masters_path.exists(): 
+            # 如果目录不存在，自动创建（防止报错）
+            try:
+                self.masters_path.mkdir(exist_ok=True)
+            except:
+                pass
+            return masters
+            
         for file_path in self.masters_path.glob("*.py"):
             if file_path.name.startswith("__"): continue
             try:
@@ -31,17 +43,23 @@ class UniversalFactory:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 if hasattr(module, 'audit'): masters[name] = module
-            except: pass
+                print(f"✅ 已加载 Master: {name}")
+            except Exception as e:
+                print(f"⚠️ Master {file_path.name} 加载失败: {e}")
         return masters
 
     def configure_git(self):
         if not self.vault_path: return
+        # 确保 Vault 目录存在
+        if not self.vault_path.exists():
+            self.vault_path.mkdir(parents=True, exist_ok=True)
+            
         subprocess.run(["git", "config", "--global", "user.email", "bot@factory.com"], check=False)
         subprocess.run(["git", "config", "--global", "user.name", "Cognitive Bot"], check=False)
 
     def fetch_elite_signals(self):
         """
-        🌟 核心逻辑：180 精锐席位 (Elite Squad 180)
+        🌟 核心逻辑：精锐席位筛选
         特性：
         1. 去重盾 (Dedup Shield): Polymarket 按 Slug 去重
         2. 狙击手保护 (Sniper Protection): Sniper 信号独立加权
@@ -50,7 +68,7 @@ class UniversalFactory:
         """
         try:
             supabase = create_client(self.supabase_url, self.supabase_key)
-            print("💎 启动精锐筛选 (目标: ~180 条 | 启用严格去重)...")
+            print("💎 启动精锐筛选 (目标: ~220 条 | 启用严格去重)...")
 
             # ==========================================
             # 1. GitHub & Paper: 全量 (上限 50)
@@ -110,6 +128,7 @@ class UniversalFactory:
                 url = r.get('url')
                 if not url: continue
                 curr_score = r.get('score') or 0
+                # 如果 URL 已存在，保留分数更高的那个
                 if url not in unique_rd_map or curr_score > (unique_rd_map[url].get('score') or 0):
                     unique_rd_map[url] = r
             deduplicated_rd = list(unique_rd_map.values())
@@ -135,7 +154,8 @@ class UniversalFactory:
             print(f"🔹 Reddit: {len(rd_picks)} 条 (Top 30 | 已熔断)")
 
             # ==========================================
-            # 4. Polymarket: Top 60 (去重 + 智能分层)
+            # 4. Polymarket: Top 80 (去重 + 智能分层)
+            # ⚠️ 您之前强调要 80 条，我这里帮您改回 80 (原代码是 60)
             # ==========================================
             poly_raw = supabase.table("raw_signals").select("*").eq("signal_type", "polymarket").order("created_at", desc=True).limit(800).execute().data or []
 
@@ -153,6 +173,7 @@ class UniversalFactory:
                 
                 curr_liq = float(p.get('liquidity') or raw.get('liquidity') or 0)
                 
+                # 保留流动性更好的那个版本
                 if slug not in unique_poly_map:
                     unique_poly_map[slug] = p
                 else:
@@ -182,8 +203,9 @@ class UniversalFactory:
                 return base + liq
 
             for r in deduplicated_poly: r['_rank'] = score_poly(r)
-            poly_picks = sorted(deduplicated_poly, key=lambda x:x['_rank'], reverse=True)[:60]
-            print(f"🔹 Polymarket: {len(poly_picks)} 条 (Top 60)")
+            # 🔥 修正：取前 80 条
+            poly_picks = sorted(deduplicated_poly, key=lambda x:x['_rank'], reverse=True)[:80]
+            print(f"🔹 Polymarket: {len(poly_picks)} 条 (Top 80)")
 
             # ==========================================
             # 5. 最终集结 (宁缺毋滥，不补位)
@@ -194,29 +216,41 @@ class UniversalFactory:
 
         except Exception as e:
             print(f"⚠️ 筛选异常: {e} (启动安全模式)")
+            import traceback
+            traceback.print_exc()
             return []
 
-    def call_ai(self, model, sys, usr):
+    def call_ai(self, model, sys_prompt, usr_prompt):
         if not self.api_key: return "ERROR", "No Key"
         # 🧠 注入‘逻辑接骨’指令
-        enhanced_sys = sys + "\n[重要]：你现在是首席审计官。不要像机器人一样总结，要像索罗斯/芒格一样思考。若信号断档，请基于你的知识库推演背景。"
+        enhanced_sys = sys_prompt + "\n[重要]：你现在是首席审计官。不要像机器人一样总结，要像索罗斯/芒格一样思考。若信号断档，请基于你的知识库推演背景。"
         payload = {
-            "model": model, "messages": [{"role": "system", "content": enhanced_sys}, {"role": "user", "content": usr}],
+            "model": model, "messages": [{"role": "system", "content": enhanced_sys}, {"role": "user", "content": usr_prompt}],
             "temperature": 0.7, "max_tokens": 1500
         }
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         try:
             res = requests.post(self.api_url, json=payload, headers=headers, timeout=60).json()
-            return "SUCCESS", res['choices'][0]['message']['content']
-        except: return "ERROR", "Timeout"
+            if 'choices' in res:
+                return "SUCCESS", res['choices'][0]['message']['content']
+            else:
+                print(f"❌ AI API Error: {res}")
+                return "ERROR", str(res)
+        except Exception as e: 
+            return "ERROR", str(e)
 
     def git_push_assets(self):
         if not self.vault_path: return
         cwd = self.vault_path
-        subprocess.run(["git", "add", "."], cwd=cwd)
+        # 简单检查 git 是否可用
+        if not (cwd / ".git").exists():
+             subprocess.run(["git", "init"], cwd=cwd, check=False)
+             subprocess.run(["git", "remote", "add", "origin", f"https://oauth2:{os.environ.get('GH_PAT')}@github.com/wenfp108/vault.git"], cwd=cwd, check=False)
+
+        subprocess.run(["git", "add", "."], cwd=cwd, check=False)
         if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=cwd).returncode != 0:
-            subprocess.run(["git", "commit", "-m", f"🧠 Cognitive Audit: {datetime.now().strftime('%H:%M:%S')}"], cwd=cwd)
-            subprocess.run(["git", "push"], cwd=cwd)
+            subprocess.run(["git", "commit", "-m", f"🧠 Cognitive Audit: {datetime.now().strftime('%H:%M:%S')}"], cwd=cwd, check=False)
+            subprocess.run(["git", "push", "origin", "main"], cwd=cwd, check=False)
 
     def audit_process(self, row, processed_ids):
         # === 1. 构建上下文 ===
@@ -236,12 +270,13 @@ class UniversalFactory:
             parts.append(f"用户: {row.get('user_name') or row.get('subreddit')} | Score: {row.get('_rank',0)}")
             parts.append(f"内容: {row.get('full_text') or row.get('title')}")
         else: # Polymarket
-            raw = row.get('raw_json')
-            if isinstance(raw, str): 
+            raw = row.get('_parsed') or row.get('raw_json') or {}
+            if isinstance(raw, str):
                 try: raw = json.loads(raw)
-                except: raw = {}
+                except: pass
             parts.append(f"预测: {row.get('title')} | 问题: {row.get('question')}")
-            parts.append(f"价格: {row.get('prices')} | 流动性: ${raw.get('liquidity')}")
+            prices = row.get('prices') or raw.get('outcome_prices')
+            parts.append(f"价格: {prices} | 流动性: ${raw.get('liquidity')}")
             parts.append(f"标签: {raw.get('strategy_tags')} | 分类: {row.get('category')}")
 
         content = "\n".join(parts)
@@ -258,21 +293,33 @@ class UniversalFactory:
             if st == "SUCCESS": return "Deep Dive", r
             return None, None
         
+        # 如果没有 Masters 插件，默认跳过 (或者可以加一个默认审计逻辑)
+        if not self.masters:
+            # print("⚠️ No masters loaded.") 
+            pass
+
         for name, mod in self.masters.items():
             try:
                 if hasattr(mod, 'audit'):
+                    # 只有当 Master 认为值得审计时才返回 (Thought, Output)
                     t, o = mod.audit(row, ask_v3)
                     if t and o:
                         results.append(json.dumps({
                             "ref_id": ref_id, "type": "V3_MASTER", "source": source,
                             "master": name, "input": content[:300].replace('\n',' '), "thought": t, "output": o
                         }, ensure_ascii=False))
-            except: continue
+                        print(f"💡 [V3-{name}] 洞察生成: {row.get('title') or row.get('full_text')[:20]}...")
+            except Exception as e: 
+                # print(f"⚠️ Master {name} audit error: {e}")
+                continue
         return results
 
-    def process_and_ship(self, input_raw, vault_path):
+    def process_and_ship(self, vault_path="vault"):
         self.vault_path = Path(vault_path)
         self.configure_git()
+        
+        # 确保目录结构
+        (self.vault_path / "instructions").mkdir(parents=True, exist_ok=True)
         
         # 加载去重 ID
         day_str = datetime.now().strftime('%Y%m%d')
@@ -284,7 +331,7 @@ class UniversalFactory:
                     try: processed_ids.add(json.loads(line).get('ref_id'))
                     except: pass
 
-        # 🌟 获取 180 精锐信号
+        # 🌟 获取精锐信号
         signals = self.fetch_elite_signals()
         if not signals:
             print("💤 本轮无新信号入库。")
@@ -293,9 +340,10 @@ class UniversalFactory:
         print(f"🚀 工厂全速运转: {len(signals)} 条 V3 级审计正在进行...")
 
         batch_size = 50
+        # 限制并发数为 5，避免 API 限流
         for i in range(0, len(signals), batch_size):
             chunk = signals[i : i + batch_size]
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 res = list(executor.map(lambda r: self.audit_process(r, processed_ids), chunk))
             
             added = []
@@ -305,7 +353,12 @@ class UniversalFactory:
             if added:
                 with open(output_file, 'a', encoding='utf-8') as f:
                     f.write('\n'.join(added) + '\n')
-                print(f"✨ 批次 {i//50 + 1} 完成 | 产出 {len(added)} 条认知资产")
+                print(f"✨ 批次 {i//batch_size + 1} 完成 | 产出 {len(added)} 条认知资产")
                 self.git_push_assets() # 50条一存
 
         print("🏁 任务完成。")
+
+if __name__ == "__main__":
+    # 实例化并运行
+    factory = UniversalFactory()
+    factory.process_and_ship()
