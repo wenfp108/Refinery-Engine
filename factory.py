@@ -208,21 +208,21 @@ class UniversalFactory:
             return "SUCCESS", res['choices'][0]['message']['content']
         except: return "ERROR", "AI_FAIL"
 
-   def git_push_assets(self):
+    def git_push_assets(self):
         """防御型推送：解决身份未知、未提交更改以及远程拒绝问题"""
         if not self.vault_path: return
         cwd = self.vault_path
         
-        # 1. 【新增】强制注入身份 (解决 Author identity unknown)
+        # 1. 强制注入身份 (解决 Author identity unknown)
         subprocess.run(["git", "config", "user.email", "bot@factory.com"], cwd=cwd)
         subprocess.run(["git", "config", "user.name", "Cognitive Bot"], cwd=cwd)
         # 解决 pull 时的 rebase 策略警告
         subprocess.run(["git", "config", "pull.rebase", "true"], cwd=cwd)
 
-        # 2. 【顺序调整】先 add 和 commit，把你的 1000 多条数据存进本地仓库
+        # 2. 顺序调整：先 add 和 commit，确保本地工作区干净
         subprocess.run(["git", "add", "."], cwd=cwd)
         
-        # 检查是否有东西可以 commit
+        # 检查是否有实质变动
         diff_status = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=cwd)
         if diff_status.returncode == 0:
             print("💤 没有发现新资产，跳过同步。")
@@ -232,7 +232,7 @@ class UniversalFactory:
         commit_msg = f"🧠 Cognitive Audit: {datetime.now().strftime('%H:%M:%S')}"
         subprocess.run(["git", "commit", "-m", commit_msg], cwd=cwd)
 
-        # 4. 【同步远程】此时再 pull --rebase，Git 就能顺畅地把远程改动接在你的 commit 之后
+        # 4. 同步远程：解决 [rejected] 冲突
         print("🔄 正在通过 rebase 同步远程仓库...")
         subprocess.run(["git", "pull", "origin", "main", "--rebase"], cwd=cwd)
 
