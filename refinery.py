@@ -1,6 +1,6 @@
 import os, json, base64, requests, importlib.util, sys
-import pandas as pd  # 📦 核心组件
-import io            # 📦 核心组件
+import pandas as pd
+import io
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
 from github import Github, Auth
@@ -19,7 +19,7 @@ auth = Auth.Token(GITHUB_TOKEN)
 gh_client = Github(auth=auth)
 private_repo = gh_client.get_repo(PRIVATE_BANK_ID)
 
-# === 🧩 2. 插件发现系统 ===
+# === 🧩 2. 插件发现系统 (已修改：强制指向 raw_signals) ===
 def get_all_processors():
     procs = {}
     proc_dir = "./processors"
@@ -33,20 +33,23 @@ def get_all_processors():
                 spec.loader.exec_module(mod)
                 procs[name] = {
                     "module": mod,
-                    "table_name": getattr(mod, "TABLE_NAME", f"{name}_logs"),
+                    "source_name": name,  # 记录来源名 (twitter, github...)
+                    "table_name": "raw_signals",  # 🔥 强制统一表名
                 }
             except Exception as e: print(f"⚠️ 插件 {name} 加载失败: {e}")
     return procs
 
 # === ⏱️ 辅助：检查数据新鲜度 ===
-def get_data_freshness(table_name):
+def get_data_freshness(table_name, source_name=None):
     try:
-        res = supabase.table(table_name)\
-            .select("bj_time")\
-            .neq("bj_time", "null")\
-            .order("bj_time", desc=True)\
-            .limit(1)\
-            .execute()
+        query = supabase.table(table_name).select("bj_time").neq("bj_time", "null")
+        
+        # 如果是 raw_signals，需要按 signal_type 过滤
+        if table_name == "raw_signals" and source_name:
+            query = query.eq("signal_type", source_name)
+            
+        res = query.order("bj_time", desc=True).limit(1).execute()
+        
         if not res.data: return (False, 9999, "无数据")
         
         last_time_str = res.data[0]['bj_time']
@@ -69,23 +72,18 @@ def get_data_freshness(table_name):
     except Exception as e:
         return (True, 0, "CheckError")
 
-# === 🔥 3. 战报工厂 (已修改：自动存入日期文件夹) ===
-
+# === 🔥 3. 战报工厂 ===
 def generate_hot_reports(processors_config):
     bj_now = datetime.now(timezone(timedelta(hours=8)))
-    
-    # --- 📂 [核心修改] 路径重构逻辑 ---
     year = bj_now.strftime('%Y')
     month = bj_now.strftime('%m')
     day = bj_now.strftime('%d')
     hour = bj_now.strftime('%H')
     
-    # 结果: reports/2026/02/05/17点战报.md
     file_name = f"{hour}点战报.md"
     report_path = f"reports/{year}/{month}/{day}/{file_name}"
     
     date_display = bj_now.strftime('%Y-%m-%d %H:%M')
-    
     md_report = f"# 🚀 Architect's Alpha 情报审计 ({date_display})\n\n"
     md_report += "> **机制说明**：全源智能去重 | 资金流向优先 | 自动归档\n\n"
 
@@ -96,12 +94,14 @@ def generate_hot_reports(processors_config):
         if hasattr(config["module"], "get_hot_items"):
             try:
                 table = config["table_name"]
-                is_fresh, mins_ago, last_update_time = get_data_freshness(table)
+                # 传入 source_name 进行过滤
+                is_fresh, mins_ago, last_update_time = get_data_freshness(table, source_name)
                 
-                # 如果超过 12 小时没数据，且不是强制模式，则跳过
                 if not is_fresh and mins_ago > 720: 
                     continue 
 
+                # 注意：get_hot_items 里面的逻辑可能还没适配 raw_signals，
+                # 但 Factory.py 是主战场，这个战报功能可以暂时作为辅助。
                 sector_data = config["module"].get_hot_items(supabase, table)
                 if not sector_data: continue
 
@@ -113,7 +113,6 @@ def generate_hot_reports(processors_config):
                 
                 for sector, data in sector_data.items():
                     md_report += f"### 🏷️ 板块：{sector}\n"
-                    
                     if isinstance(data, dict):
                         if "header" in data: md_report += data["header"] + "\n"
                         if "rows" in data and isinstance(data["rows"], list):
@@ -122,91 +121,95 @@ def generate_hot_reports(processors_config):
                         md_report += "| 信号 | 内容 | 🔗 |\n| :--- | :--- | :--- |\n"
                         for item in data:
                             md_report += f"| {item.get('score','-')} | {item.get('full_text','-')} | [🔗]({item.get('url','#')}) |\n"
-                    
                     md_report += "\n"
             except Exception as e:
-                print(f"⚠️ {source_name} 渲染异常: {e}")
                 pass 
 
     if not has_content:
         md_report += "\n\n**🛑 本轮扫描全域静默，请查阅历史归档。**"
 
-    # --- 写入战报文件 (路径已变) ---
     try:
         try:
             old = private_repo.get_contents(report_path)
             private_repo.update_file(old.path, f"📊 Update: {file_name}", md_report, old.sha)
-            print(f"📝 战报更新：{report_path} (活跃源: {active_sources_count})")
+            print(f"📝 战报更新：{report_path}")
         except:
             private_repo.create_file(report_path, f"🚀 New: {file_name}", md_report)
-            print(f"📝 战报创建：{report_path} (活跃源: {active_sources_count})")
+            print(f"📝 战报创建：{report_path}")
     except Exception as e: 
-        print(f"❌ 写入 {report_path} 失败: {e}")
+        print(f"❌ 写入失败: {e}")
 
-# === 🚜 4. 滚动收割 (保持不变) ===
+# === 🚜 4. 滚动收割 (适配 raw_signals) ===
 def perform_grand_harvest(processors_config):
     print("⏰ 触发每日滚动收割 (Archive & Purge)...")
     cutoff_date = (datetime.now() - timedelta(days=7))
     cutoff_str = cutoff_date.isoformat()
     date_tag = cutoff_date.strftime('%Y%m%d')
 
-    for name, config in processors_config.items():
-        table = config["table_name"]
+    # 只需要对 raw_signals 做一次清理即可
+    table = "raw_signals"
+    try:
+        res = supabase.table(table).select("*").lt("created_at", cutoff_str).execute()
+        data = res.data
         
-        try:
-            res = supabase.table(table).select("*").lt("bj_time", cutoff_str).execute()
-            data = res.data
-            
-            if not data: continue
-                
+        if data:
             df = pd.DataFrame(data)
             buffer = io.BytesIO()
             df.to_parquet(buffer, index=False, engine='pyarrow', compression='snappy')
-            content_bytes = buffer.getvalue()
             
             year_month = cutoff_date.strftime('%Y/%m')
-            hour_tag = datetime.now().strftime('%H%M%S') 
-            archive_path = f"archive/{year_month}/{table}_{date_tag}_{hour_tag}.parquet"
+            archive_path = f"archive/{year_month}/{table}_{date_tag}.parquet"
             
-            try:
-                private_repo.create_file(
-                    path=archive_path,
-                    message=f"🏛️ Archive: {table} data batch",
-                    content=content_bytes,
-                    branch="main" 
-                )
-                
-                # 只在归档成功后删除
-                ids = [item['id'] for item in data if 'id' in item]
-                if ids:
-                    for i in range(0, len(ids), 500):
-                        supabase.table(table).delete().in_("id", ids[i:i+500]).execute()
-                    print(f"   🗑️ {table}: 已清理 {len(ids)} 条")
-            except Exception as e:
-                print(f"   ❌ {table} 归档失败: {e}")
-        except Exception as e:
-            pass
+            private_repo.create_file(
+                path=archive_path,
+                message=f"🏛️ Archive: {table} batch",
+                content=buffer.getvalue(),
+                branch="main" 
+            )
+            
+            ids = [item['id'] for item in data if 'id' in item]
+            if ids:
+                for i in range(0, len(ids), 500):
+                    supabase.table(table).delete().in_("id", ids[i:i+500]).execute()
+                print(f"   🗑️ {table}: 已清理 {len(ids)} 条过期数据")
+    except Exception as e:
+        pass
 
-# === 🏦 5. 搬运逻辑 (保持不变) ===
+# === 🏦 5. 搬运逻辑 (核心修改：注入 signal_type) ===
 def process_and_upload(path, sha, config):
     check = supabase.table("processed_files").select("file_sha").eq("file_sha", sha).execute()
     if check.data: return 0
     try:
         content_file = private_repo.get_contents(path)
         raw_data = json.loads(base64.b64decode(content_file.content).decode('utf-8'))
+        
+        # 调用 Processor 清洗数据
         items = config["module"].process(raw_data, path)
         count = len(items) if items else 0
+        
         if items:
+            # 🔥 注入核心字段 signal_type
+            for item in items:
+                item['signal_type'] = config["source_name"]
+                
+                # 兼容性处理：确保 raw_json 存在 (如果 processor 没生成)
+                if 'raw_json' not in item:
+                    item['raw_json'] = item.copy() # 简单备份
+
+            # 分批写入 raw_signals
             for i in range(0, len(items), 500):
-                supabase.table(config["table_name"]).insert(items[i : i+500]).execute()
+                supabase.table("raw_signals").insert(items[i : i+500]).execute()
+            
+            # 记录文件已处理
             supabase.table("processed_files").upsert({
                 "file_sha": sha, 
                 "file_path": path,
-                "engine": config.get("table_name", "unknown").split('_')[0],
+                "engine": config["source_name"],
                 "item_count": count
             }).execute()
             return count
-    except Exception as e: pass
+    except Exception as e: 
+        print(f"❌ 处理文件 {path} 失败: {e}")
     return 0
 
 def sync_bank_to_sql(processors_config, full_scan=False):
@@ -229,7 +232,7 @@ def sync_bank_to_sql(processors_config, full_scan=False):
                         stats[source_key] += added
         except Exception as e: print(f"❌ Scan Error: {e}")
     else:
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        since = datetime.now(timezone.utc) - timedelta(hours=24) # 稍微多看一点时间，防止漏
         commits = private_repo.get_commits(since=since)
         for commit in commits:
             for f in commit.files:
@@ -240,19 +243,14 @@ def sync_bank_to_sql(processors_config, full_scan=False):
                         stats[source_key] += added
 
     for source, count in stats.items():
-        if count > 0: print(f"✅ {source} (+{count})")
+        if count > 0: print(f"✅ {source} (+{count}) -> raw_signals")
 
 if __name__ == "__main__":
     all_procs = get_all_processors()
     is_full_scan = (os.environ.get("FORCE_FULL_SCAN") == "true")
     
-    # 1. 搬运数据
     sync_bank_to_sql(all_procs, full_scan=is_full_scan)
-    
-    # 2. 生成战报 (这一行必须保留！)
     generate_hot_reports(all_procs)
-    
-    # 3. 滚动收割 (直接运行，不看时间，不看脸色)
     perform_grand_harvest(all_procs)
     
     print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 审计任务圆满完成。")
