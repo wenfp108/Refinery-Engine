@@ -5,6 +5,7 @@ import os
 import importlib.util
 import sys
 from pathlib import Path
+from datetime import datetime  # ✅ 新增：用于生成月份文件名
 
 class UniversalFactory:
     def __init__(self, masters_path="masters"):
@@ -54,7 +55,7 @@ class UniversalFactory:
         return hashlib.sha256(content.encode()).hexdigest()
 
     def process_and_ship(self, input_raw, vault_path, batch_size=2000):
-        """加工并送回中央银行 (流式写入版)"""
+        """加工并送回中央银行 (流式写入 + 按月分卷版)"""
         input_path = Path(input_raw)
         vault_dir = Path(vault_path)
         
@@ -70,8 +71,13 @@ class UniversalFactory:
             print(f"❌ Parquet 读取失败: {e}")
             return
 
+        # 🔥 [关键修改] 动态生成带月份的文件名，防止单文件过大
+        # 结果示例: instructions/teachings_202602.jsonl
+        current_month = datetime.now().strftime('%Y%m') 
+        filename = f"teachings_{current_month}.jsonl"
+        
         # 准备输出文件 (自动创建父文件夹)
-        output_file = vault_dir / "instructions" / "teachings.jsonl"
+        output_file = vault_dir / "instructions" / filename
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         buffer = []
@@ -84,7 +90,8 @@ class UniversalFactory:
         with open(output_file, 'a', encoding='utf-8') as f:
             for row_dict in rows:
                 ref_id = self.generate_ref_id(row_dict)
-                event_title = row_dict.get('eventTitle', '未命名事件')
+                # 兼容不同数据源的标题字段 (Polymarket用eventTitle, Twitter用full_text前20字)
+                event_title = row_dict.get('eventTitle') or row_dict.get('full_text', '')[:20] or '未命名信号'
 
                 # 并行审计 (逻辑层面)
                 for master_name, master_mod in self.masters.items():
@@ -95,15 +102,17 @@ class UniversalFactory:
                         # 🛡️ 熔断保护：防止单个大师报错卡死整个流程
                         thought, output = master_mod.audit(row_dict)
 
-                        entry = {
-                            "ref_id": ref_id,
-                            "master": master_name,
-                            "version": ver,
-                            "instruction": f"请分析事件: {event_title}",
-                            "thought": thought,
-                            "output": output
-                        }
-                        buffer.append(json.dumps(entry, ensure_ascii=False))
+                        # 只有大师有话要说(返回非空)时才记录
+                        if thought or output:
+                            entry = {
+                                "ref_id": ref_id,
+                                "master": master_name,
+                                "version": ver,
+                                "instruction": f"请分析事件: {event_title}",
+                                "thought": thought,
+                                "output": output
+                            }
+                            buffer.append(json.dumps(entry, ensure_ascii=False))
                         
                     except Exception as e:
                         # 仅打印错误，不中断循环
@@ -125,7 +134,6 @@ class UniversalFactory:
 
 if __name__ == "__main__":
     # 示例调用
-    # 假设此时在 refinery-engine 根目录
     factory = UniversalFactory(masters_path="../Masters-Council/masters")
     factory.process_and_ship(
         input_raw="temp_raw.parquet", 
