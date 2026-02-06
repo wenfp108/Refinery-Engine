@@ -65,6 +65,7 @@ class UniversalFactory:
 
             # === 1. GitHub 信号独立处理 (保底 20 条) ===
             print("💎 正在获取 GitHub 信号...")
+            # limit(50) 是为了多抓取一些生肉，防止去重后不够 20 条
             github_raw = supabase.table("raw_signals").select("*").eq("signal_type", "github").order("created_at", desc=True).limit(50).execute().data or []
             
             unique_github = {}
@@ -74,11 +75,13 @@ class UniversalFactory:
                 if name and name not in unique_github:
                     unique_github[name] = r
             
-            github_picks = list(unique_github.values())[:20]  # 精准截取前 20
+            # 独立截断：确保 GitHub 稳拿前 20
+            github_picks = list(unique_github.values())[:20]
             print(f"✅ GitHub 处理完成：去重后获 {len(github_picks)} 条")
 
             # === 2. Paper 信号独立处理 (保底 30 条) ===
             print("💎 正在获取 Paper 信号...")
+            # limit(50) 同理，为了保底
             paper_raw = supabase.table("raw_signals").select("*").eq("signal_type", "papers").order("created_at", desc=True).limit(50).execute().data or []
             
             unique_paper = {}
@@ -88,13 +91,15 @@ class UniversalFactory:
                 if title and title not in unique_paper:
                     unique_paper[title] = r
             
-            paper_picks = list(unique_paper.values())[:30]  # 精准截取前 30
+            # 独立截断：确保 Paper 稳拿前 30
+            paper_picks = list(unique_paper.values())[:30]
             print(f"✅ Paper 处理完成：去重后获 {len(paper_picks)} 条")
 
             # === 3. 最终汇总 (仅用于后续循环) ===
+            # 这里合并的是已经处理干净的成品列表，不会再有冲突
             rare_picks = github_picks + paper_picks
 
-            # 2. Twitter (VIP 权重)
+            # === 4. Twitter (VIP 权重) - 保持原样 ===
             tw_raw = supabase.table("raw_signals").select("*").eq("signal_type", "twitter").order("created_at", desc=True).limit(500).execute().data or []
             vip_list = ['Karpathy', 'Musk', 'Vitalik', 'LeCun', 'Dalio', 'Naval', 'Sama', 'PaulG']
             def score_twitter(row):
@@ -107,13 +112,13 @@ class UniversalFactory:
             for r in tw_raw: r['_rank'] = score_twitter(r)
             tw_picks = sorted(tw_raw, key=lambda x:x['_rank'], reverse=True)[:60]
 
-            # 3. Reddit (Vibe 权重)
+            # === 5. Reddit (Vibe 权重) - 保持原样 ===
             rd_raw = supabase.table("raw_signals").select("*").eq("signal_type", "reddit").order("created_at", desc=True).limit(500).execute().data or []
             unique_rd = {r.get('url'): r for r in rd_raw if r.get('url')}
             def score_reddit(row): return (row.get('score') or 0) * (1 + abs(float(row.get('vibe') or 0)))
             rd_picks = sorted(unique_rd.values(), key=score_reddit, reverse=True)[:30]
 
-            # 4. Polymarket (Tail_Risk 权重)
+            # === 6. Polymarket (Tail_Risk 权重) - 保持原样 ===
             poly_raw = supabase.table("raw_signals").select("*").eq("signal_type", "polymarket").order("created_at", desc=True).limit(800).execute().data or []
             unique_poly = {}
             for p in poly_raw:
