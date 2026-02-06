@@ -70,7 +70,7 @@ class UniversalFactory:
             github_raw = supabase.table("raw_signals").select("*").eq("signal_type", "github").order("created_at", desc=True).limit(20).execute().data or []
             
             # B. 抓取 Paper (前20) - 这样就算 GitHub 有100条新数据，Paper 也能稳拿20个席位
-            paper_raw = supabase.table("raw_signals").select("*").eq("signal_type", "paper").order("created_at", desc=True).limit(20).execute().data or []
+            paper_raw = supabase.table("raw_signals").select("*").eq("signal_type", "papers").order("created_at", desc=True).limit(20).execute().data or []
 
             # C. 合并数据
             rare_raw = github_raw + paper_raw
@@ -136,7 +136,7 @@ class UniversalFactory:
         if source == 'github':
             parts.append(f"项目: {row.get('repo_name')} | Stars: {row.get('stars')} | Topics: {row.get('topics')}")
             parts.append(f"描述: {row.get('full_text') or '新项目发布'} | Link: {row.get('url')}")
-        elif source == 'paper':
+        elif source == 'papers':
             parts.append(f"论文: {row.get('title')} | 期刊: {row.get('journal')}")
             parts.append(f"引用: {row.get('citations')} | 摘要: {row.get('full_text')}")
         elif source in ['twitter', 'reddit']:
