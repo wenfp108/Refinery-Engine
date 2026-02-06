@@ -225,7 +225,18 @@ class UniversalFactory:
         if not self.vault_path: return
         cwd = self.vault_path
         
-        # 1. 【新增】强制注入身份 (解决 Author identity unknown)
+        # === 🛡️ 新增：自愈逻辑 ===
+        # 检查是否存在僵尸 rebase 锁，如果有，先杀掉
+        rebase_dir = cwd / ".git" / "rebase-merge"
+        if rebase_dir.exists():
+            print("🚑 检测到僵尸 Rebase 锁，正在执行战地急救...")
+            subprocess.run(["git", "rebase", "--abort"], cwd=cwd)
+            if rebase_dir.exists(): # 如果 abort 失败，直接物理删除
+                import shutil
+                shutil.rmtree(rebase_dir)
+        # =======================
+
+        # 1. 强制注入身份
         subprocess.run(["git", "config", "user.email", "bot@factory.com"], cwd=cwd)
         subprocess.run(["git", "config", "user.name", "Cognitive Bot"], cwd=cwd)
         # 解决 pull 时的 rebase 策略警告
