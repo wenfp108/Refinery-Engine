@@ -112,12 +112,14 @@ class UniversalFactory:
                 return score
             for r in tw_raw: r['_rank'] = score_twitter(r)
             tw_picks = sorted(tw_raw, key=lambda x:x['_rank'], reverse=True)[:60]
+            print(f"✅ Twitter 处理完成：获 {len(tw_picks)} 条")
 
             # === 4. Reddit (Vibe 权重) - 保持原样 ===
             rd_raw = supabase.table("raw_signals").select("*").eq("signal_type", "reddit").order("created_at", desc=True).limit(500).execute().data or []
             unique_rd = {r.get('url'): r for r in rd_raw if r.get('url')}
             def score_reddit(row): return (row.get('score') or 0) * (1 + abs(float(row.get('vibe') or 0)))
             rd_picks = sorted(unique_rd.values(), key=score_reddit, reverse=True)[:30]
+            print(f"✅ Reddit 处理完成：获 {len(rd_picks)} 条")
 
             # === 5. Polymarket (Tail_Risk 权重) - 保持原样 ===
             poly_raw = supabase.table("raw_signals").select("*").eq("signal_type", "polymarket").order("created_at", desc=True).limit(800).execute().data or []
@@ -139,6 +141,7 @@ class UniversalFactory:
                 if any(x in str(row.get('category','')).upper() for x in ['ECONOMY', 'TECH']): return 5000000 + liq
                 return 1000000 + liq
             poly_picks = sorted(unique_poly.values(), key=score_poly, reverse=True)[:80]
+            print(f"✅ Polymarket 处理完成：获 {len(poly_picks)} 条")
 
             return github_picks + paper_picks + tw_picks + rd_picks + poly_picks
         except Exception as e:
