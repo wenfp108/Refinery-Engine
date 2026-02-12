@@ -39,7 +39,7 @@ def process(raw_data, path):
     # 1. 备用时间（仅当 JSON 里没时间时使用）
     force_now_time = (datetime.utcnow() + timedelta(hours=8)).isoformat()
     
-   for item in items:
+    for item in items:
         # 🔥 2. 核心修改：优先尝试获取原始数据的更新时间
         # Polymarket 原始 JSON 通常带有 updatedAt 字段
         raw_time = item.get('updatedAt') 
