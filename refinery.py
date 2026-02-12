@@ -136,68 +136,76 @@ def generate_hot_reports(processors_config):
     except Exception as e: 
         print(f"❌ 写入失败: {e}")
 
-# === 🚜 4. 滚动收割 (✅ 修正版：只清理 raw_signals) ===
+# === 🚜 4. 滚动收割 (✅ 手动清理版：收割 2月6日之前的数据) ===
 def perform_grand_harvest(processors_config):
     print("⏰ 触发每日滚动收割 (Archive & Purge)...")
-    cutoff_date = (datetime.now() - timedelta(days=7)).replace(hour=23, minute=59, second=59)
-    cutoff_str = cutoff_date.isoformat()
-    date_tag = cutoff_date.strftime('%Y%m%d')
+    
+    # 🔥 1. 设置截止日期：收割 2026-02-06 00:00:00 之前的所有数据
+    # (等这次跑完，以后想恢复自动，就把这行删了，用下面注释掉的那段)
+    cutoff_str = "2026-02-06T00:00:00"
+    
+    # [未来恢复自动时用这段]
+    # cutoff_date = (datetime.now() - timedelta(days=7)).replace(hour=23, minute=59, second=59)
+    # cutoff_str = cutoff_date.isoformat()
 
-    # ✅ 修正：列表里只有 raw_signals，彻底删除旧表引用
+    # ✅ 修正：列表里只有 raw_signals
     target_tables = ["raw_signals"] 
 
     for table in target_tables:
-        try:
-            # 1. 归档逻辑 (将7天前的数据打包上传 GitHub)
-            res = supabase.table(table).select("*").lt("created_at", cutoff_str).execute()
-            data = res.data
-            
-            if data:
-                # 转换为 Parquet 上传 GitHub
-                df = pd.DataFrame(data)
+        page_count = 0
+        while True:  # 🔥 开启循环模式，直到把旧数据搬空
+            try:
+                # 🔥 2. 关键修改：使用 "bj_time" (业务时间) 筛选，每次取 1000 条
+                res = supabase.table(table).select("*").lt("bj_time", cutoff_str).limit(1000).execute()
+                data = res.data
+                
+                if not data: 
+                    print(f"   🎉 [{table}] 截止 {cutoff_str} 的旧数据已全部收割完毕！")
+                    break # 数据空了，停止循环
+                
+                print(f"   🔄 [{table}] 正在处理第 {page_count + 1} 批，本批 {len(data)} 条...")
 
-                # 🔥🔥 [新增修复] 强制统一 raw_json 列类型为字符串，解决 pyarrow 混合类型报错 🔥🔥
+                # --- 归档逻辑 ---
+                df = pd.DataFrame(data)
+                
+                # 🔥 强制修正 raw_json 类型，防止报错
                 if 'raw_json' in df.columns:
                     df['raw_json'] = df['raw_json'].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (dict, list)) else str(x))
                 
                 buffer = io.BytesIO()
                 df.to_parquet(buffer, index=False, engine='pyarrow', compression='snappy')
                 
-                year_month = cutoff_date.strftime('%Y/%m')
-                # 🔥 修改开始：使用当前时间（精确到秒）作为文件名后缀
+                # 文件名带时间戳 + 批次号，防止重名
                 current_run_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
-                archive_path = f"archive/{year_month}/{table}_{current_run_tag}.parquet"
-                # 🔥 修改结束
+                archive_path = f"archive/manual_cleanup/{table}_{current_run_tag}_batch{page_count}.parquet"
                 
                 try:
                     private_repo.create_file(
                         path=archive_path,
-                        message=f"🏛️ Archive: {table} batch",
+                        message=f"🏛️ Archive: {table} manual batch {page_count}",
                         content=buffer.getvalue(),
                         branch="main" 
                     )
+                    print(f"   ✅ 归档成功: {archive_path}")
                 except Exception as upload_e:
-                    print(f"   ⚠️ 归档文件上传失败 (可能已存在): {upload_e}")
-                    # 🔥 修改开始：添加刹车逻辑
-                    print("   🛑以此停止：为防止数据丢失，跳过删除步骤！")
-                    return 
-                    # 🔥 修改结束
-                
-                # 2. 清理逻辑 (删除已归档的数据)
-                # 使用循环分批删除，防止超时
+                    print(f"   ⚠️ 上传失败: {upload_e}")
+                    print("   🛑 停止循环，保护数据！")
+                    return # 失败立即刹车
+
+                # --- 删除逻辑 ---
                 ids = [item['id'] for item in data if 'id' in item]
                 if ids:
-                    batch_size = 500
-                    for i in range(0, len(ids), batch_size):
-                        batch = ids[i : i + batch_size]
+                    # 分小批删除，防止 URL 过长
+                    for i in range(0, len(ids), 500):
+                        batch = ids[i : i + 500]
                         supabase.table(table).delete().in_("id", batch).execute()
-                    print(f"   🗑️ {table}: 已清理 {len(ids)} 条过期数据")
-            else:
-                pass # 没有过期数据
+                    print(f"   🗑️ 已清理 {len(ids)} 条数据")
                 
-        except Exception as e:
-            # 只有 raw_signals 会走到这里，旧表根本不会报错
-            print(f"   ⚠️ [{table}] 收割任务跳过: {e}")
+                page_count += 1
+                
+            except Exception as e:
+                print(f"   ⚠️ 收割循环异常: {e}")
+                break
 
 # === 🏦 5. 搬运逻辑 (核心：JSON -> Supabase) ===
 def process_and_upload(path, sha, config):
