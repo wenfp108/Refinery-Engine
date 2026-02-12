@@ -26,5 +26,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           FORCE_REPORT: 'true'      # 强制生成每小时战报
-          FORCE_FULL_SCAN: 'true'   # 🔥 全量补录开关 (第一次跑完后，请记得改回 'false')
+          FORCE_FULL_SCAN: 'false'   # 🔥 全量补录开关 (第一次跑完后，请记得改回 'false')
         run: python refinery.py
